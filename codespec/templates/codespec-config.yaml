@@ -1,0 +1,14 @@
+# CodeSpec 工作流项目配置 — 复制到目标仓库根 codespec/.codespec/config.yaml
+language: zh-CN
+
+# 模块分节表：归档合并时按 id 定位 SPEC.md / DESIGN.md 中的分节锚点
+# 新增模块时在此登记，并在 codespec/SPEC.md、codespec/DESIGN.md 建立对应分节
+modules:
+  - id: auth
+    label: 认证
+    spec_section: "## 模块：认证（auth）"
+    design_section: "## 模块：认证（auth）"
+  - id: user
+    label: 用户
+    spec_section: "## 模块：用户（user）"
+    design_section: "## 模块：用户（user）"

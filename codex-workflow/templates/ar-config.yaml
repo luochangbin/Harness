@@ -1,0 +1,28 @@
+# AR 工作流项目配置 — 复制到目标仓库根 codespec/.ar/config.yaml
+language: zh-CN
+
+# Design Reasoner 初始为 ask；首次 Design 选择成功后替换并固定
+# local：当前控制 Agent；oracle-cli：Oracle CLI → ChatGPT Web GPT-5.6 Sol
+reasoning_mode: ask
+# reasoning_model: gpt-5.6-sol
+# reasoning_effort: extended
+
+# Build Executor 初始为 ask；首次 Build 先选候选，再定向探测
+# 允许值：ask | current | claude | opencode
+default_executor: ask
+
+# 可选；仅当 default_executor: opencode 时生效。值是 OpenCode agent ID，不是模型名
+# 在 ~/.config/opencode/agents/ 或项目 .opencode/agents/ 安装对应 profile 后再启用
+# opencode_worker_agent: ar-worker-deepseek
+
+# 模块分节表：归档合并时按 id 定位 SPEC.md / DESIGN.md 中的分节锚点
+# 新增模块时在此登记，并在 codespec/SPEC.md、codespec/DESIGN.md 建立对应分节
+modules:
+  - id: auth
+    label: 认证
+    spec_section: "## 模块：认证（auth）"
+    design_section: "## 模块：认证（auth）"
+  - id: user
+    label: 用户
+    spec_section: "## 模块：用户（user）"
+    design_section: "## 模块：用户（user）"
