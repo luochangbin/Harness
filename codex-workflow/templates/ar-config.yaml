@@ -1,15 +1,12 @@
 # AR 工作流项目配置 — 复制到目标仓库根 codespec/.ar/config.yaml
 language: zh-CN
 
-# Design Reasoner 初始为 ask；首次 Design 选择成功后替换并固定
-# local：当前控制 Agent；oracle-cli：Oracle CLI → ChatGPT Web GPT-5.6 Sol
-reasoning_mode: ask
-# reasoning_model: gpt-5.6-sol
-# reasoning_effort: extended
-
 # Build Executor 初始为 ask；首次 Build 先选候选，再定向探测
-# 允许值：ask | current | claude | opencode
+# 新选择：ask | current | subagent | opencode；旧 claude 配置仍兼容
 default_executor: ask
+
+# OpenCode transport for new ARs: server uses the bundled MCP Broker; null keeps legacy CLI behavior.
+opencode_transport: server
 
 # 可选；仅当 default_executor: opencode 时生效。值是 OpenCode agent ID，不是模型名
 # 在 ~/.config/opencode/agents/ 或项目 .opencode/agents/ 安装对应 profile 后再启用

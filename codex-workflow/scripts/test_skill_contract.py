@@ -125,6 +125,20 @@ class ShortcutSkillContractTest(unittest.TestCase):
 class ExecutorRoutingContractTest(unittest.TestCase):
     """Task 5：Build 执行器路由、session 恢复与 Worker 越权文本契约。"""
 
+    def test_first_executor_choice_prefers_buttons_with_numeric_fallback(self):
+        skill = _read(SKILL_MD)
+        build = skill[skill.index("## 阶段 3：build"):skill.index("## 阶段 4：verify")]
+        for marker in (
+                "request_user_input",
+                "当前 (Recommended)",
+                "按展示顺序连续编号",
+                "回复序号",
+                "仍接受执行器名称",
+                "不得仅为显示按钮切换到 Plan 模式",
+                "客户端自动提供的自由输入 Other",
+        ):
+            self.assertIn(marker, build)
+
     def test_build_flow_tools_present_in_order(self):
         skill = _read(SKILL_MD)
         flow = [
@@ -224,7 +238,7 @@ class ExecutorRoutingContractTest(unittest.TestCase):
         self.assertIn("外部 Worker 必须通过宿主权限机制启动", skill)
         self.assertIn("禁止因授权被拒而切换执行器", skill)
 
-    def test_worker_run_owns_utf8_launch_and_completion_wait(self):
+    def test_worker_run_owns_utf8_launch_and_bounded_completion_wait(self):
         skill = _read(SKILL_MD)
         contract = skill[skill.index("## Build 控制面与 Worker 契约"):]
         for marker in (
@@ -232,7 +246,9 @@ class ExecutorRoutingContractTest(unittest.TestCase):
                 "--prompt-file",
                 "不使用 PowerShell 管道",
                 "不使用 .NET ProcessStartInfo",
-                "等待同一进程完成事件",
+                "默认硬时限为 1800 秒",
+                "退出码 7 表示超时且进程树已停止",
+                "同一 ID 使用事件等待接口",
                 "Worker 运行期间不运行",
                 "也不轮询仓库",
                 "worker_exit_code",
@@ -343,18 +359,43 @@ class OutcomeAcceptanceContractTest(unittest.TestCase):
 
     def test_verification_template_requires_delivery_and_user_outcome_rows(self):
         verification = _read(os.path.join(TEMPLATES, "verification.md"))
-        for marker in ("可运行交付", "核心用户结果", "组件证据"):
+        for marker in (
+                "可运行交付",
+                "核心用户结果",
+                "组件证据",
+                "## Delivery Evidence",
+                "实际启动命令",
+                "实际访问入口",
+                "实际监听/宿主",
+                "回复前运行状态",
+        ):
             self.assertIn(marker, verification)
 
-    def test_design_prompt_requires_delivery_contract(self):
-        prompt = _read(os.path.join(TEMPLATES, "design-reasoner-prompt.txt"))
-        self.assertIn("## Delivery Contract", prompt)
-        self.assertIn("启动方式", prompt)
-        self.assertIn("用户可观察结果", prompt)
+    def test_design_template_requires_delivery_contract(self):
+        design = _read(os.path.join(TEMPLATES, "design.md"))
+        for marker in (
+                "## Delivery Contract",
+                "启动方式",
+                "交付启动命令",
+                "交付访问入口",
+                "监听/宿主约束",
+                "交付运行模式",
+                "用户可观察结果",
+        ):
+            self.assertIn(marker, design)
 
     def test_runnable_delivery_pressure_scenario_exists(self):
         scenario = os.path.join(EVAL_SCENARIOS, "runnable-delivery-gate.md")
         self.assertTrue(os.path.isfile(scenario), scenario)
+
+    def test_delivery_command_consistency_pressure_scenario_exists(self):
+        scenario = os.path.join(
+            EVAL_SCENARIOS, "delivery-command-consistency.md")
+        self.assertTrue(os.path.isfile(scenario), scenario)
+
+    def test_verify_runs_deterministic_delivery_contract_gate(self):
+        skill = _read(SKILL_MD)
+        self.assertIn("delivery_contract_check.py", skill)
 
 
 class DesignBuildHandoffContractTest(unittest.TestCase):
@@ -384,75 +425,76 @@ class DesignBuildHandoffContractTest(unittest.TestCase):
         self.assertTrue(os.path.isfile(scenario), scenario)
 
 
-class DesignReasonerContractTest(unittest.TestCase):
-    """Design Reasoner is selected separately from the Build executor."""
-
-    def test_default_config_starts_both_choices_at_ask(self):
-        config = _read(os.path.join(TEMPLATES, "ar-config.yaml"))
-        self.assertIn("reasoning_mode: ask", config)
-        self.assertIn("default_executor: ask", config)
-
-    def test_ar_state_pins_reasoner_separately_from_worker(self):
-        state = _read(os.path.join(TEMPLATES, "ar-yaml.md"))
-        for marker in (
-                "reasoner_mode", "reasoner_model",
-                "reasoner_effort", "reasoner_session_id",
-                "worker_executor"):
-            self.assertIn(marker, state)
-        self.assertNotIn("reasoner_mcp", state)
-
-    def test_design_routes_reasoner_before_challenge_and_build(self):
-        skill = _read(SKILL_MD)
-        design = skill[skill.index("## 阶段 2：design"):skill.index("## 阶段 3：build")]
-        self.assertLess(design.index("reasoner_support.py inspect"),
-                        design.index("challenge-protocol.md"))
-        self.assertIn("Oracle CLI", design)
-        self.assertIn("--dry-run json", design)
-        self.assertIn("--browser-manual-login", design)
-        self.assertIn("gpt-5.6-sol", design)
-        self.assertNotIn("Oracle MCP", design)
-
-    def test_fixed_reasoner_prompt_has_output_contract(self):
-        prompt = _read(os.path.join(TEMPLATES, "design-reasoner-prompt.txt"))
-        for marker in (
-                "{{AR_CHANGE}}", "COMPLETE", "NEED_MORE_CONTEXT",
-                "BLOCKED_DECISION", "不得修改文件", "验收场景"):
-            self.assertIn(marker, prompt)
-
-    def test_reasoner_scenarios_exist(self):
-        for name in (
-                "reasoner-first-selection.md",
-                "oracle-cli-unavailable.md",
-                "oracle-cli-dry-run-boundary.md",
-                "oracle-cli-first-login.md"):
-            self.assertTrue(os.path.isfile(os.path.join(EVAL_SCENARIOS, name)), name)
-
-    def test_oracle_preflight_and_greenfield_rules_are_explicit(self):
-        skill = _read(SKILL_MD)
-        prompt = _read(os.path.join(TEMPLATES, "design-reasoner-prompt.txt"))
-        for marker in ("专用 Chrome", "待发送文件清单", "禁止降低 effort"):
-            self.assertIn(marker, skill)
-        self.assertIn("greenfield", prompt)
-        self.assertIn("不得仅因源码不存在返回 NEED_MORE_CONTEXT", prompt)
-
-
 class WorkerBatchContractTest(unittest.TestCase):
-    """大型 full AR 按任务批次复用同一 session，避免单次黑盒长运行。"""
+    """Build 只按设计声明的实施 Phase 分批，并复用同一 session。"""
 
-    def test_large_full_build_uses_bounded_batches_with_same_session(self):
+    def test_build_batches_follow_declared_implementation_phases_only(self):
         skill = _read(SKILL_MD)
+        build = skill[skill.index("## 阶段 3：build"):skill.index("## 阶段 4：verify")]
         for marker in (
-                "--task-batch",
-                "3～8 个未完成任务",
-                "复用同一",
-                "不得把 full AR 的全部任务塞进一次长运行",
+                "实施 Phase",
+                "design.md",
+                "声明顺序",
+                "每个 Phase 独立验收",
+                "同一 Session",
+                "单一隐式 Phase",
         ):
-            self.assertIn(marker, skill)
+            self.assertIn(marker, build)
+        for obsolete in (
+                "未完成任务 >8",
+                "未完成任务 ≤8",
+                "3～8 个未完成任务",
+        ):
+            self.assertNotIn(obsolete, build)
+
+    def test_design_and_tasks_templates_define_phase_mapping(self):
+        design = _read(os.path.join(TEMPLATES, "design.md"))
+        tasks = _read(os.path.join(TEMPLATES, "tasks.md"))
+        for marker in ("实施 Phases", "Phase 1", "可运行结果", "包含任务"):
+            self.assertIn(marker, design)
+        for marker in ("Phase 1", "design.md", "一个实施 Phase"):
+            self.assertIn(marker, tasks)
 
     def test_worker_prompt_has_batch_slot(self):
         prompt = _read(os.path.join(TEMPLATES, "build-worker-prompt.txt"))
         self.assertIn("{{TASK_BATCH}}", prompt)
         self.assertIn("只实现本批次", prompt)
+
+
+class ReviewLoopContractTest(unittest.TestCase):
+    """可选审核-修复循环的最小契约，并锁定 Oracle 已从源 Skill 移除。"""
+
+    def test_skill_exposes_optional_review_loop(self):
+        skill = _read(SKILL_MD)
+        for marker in (
+                "审核-修复自动循环",
+                "reference/review-repair-loop.md",
+                "review_loop_support.py",
+                "逐问题三次暂缓",
+        ):
+            self.assertIn(marker, skill)
+
+    def test_review_loop_reference_and_script_exist(self):
+        self.assertTrue(os.path.isfile(os.path.join(SKILL_ROOT, "reference", "review-repair-loop.md")))
+        self.assertTrue(os.path.isfile(os.path.join(HERE, "review_loop_support.py")))
+
+    def test_templates_carry_loop_state_slots(self):
+        state = _read(os.path.join(TEMPLATES, "ar-yaml.md"))
+        for marker in ("review_loop_id", "review_loop_status", "review_loop_issue_limit",
+                       "review_loop_round", "review_loop_dispatch_id",
+                       "review_loop_expected_revision"):
+            self.assertIn(marker, state)
+        verification = _read(os.path.join(TEMPLATES, "verification.md"))
+        self.assertIn("review-loop-state:start", verification)
+        self.assertIn("review-loop-state:end", verification)
+
+    def test_oracle_is_removed_from_source_skill(self):
+        skill = _read(SKILL_MD)
+        for token in ("Oracle", "oracle-cli", "gpt-5.6-sol", "design-reasoner-prompt"):
+            self.assertNotIn(token, skill)
+        self.assertFalse(os.path.isfile(os.path.join(SKILL_ROOT, "reference", "reasoner-routing.md")))
+        self.assertFalse(os.path.isfile(os.path.join(HERE, "reasoner_support.py")))
+        self.assertFalse(os.path.isfile(os.path.join(TEMPLATES, "design-reasoner-prompt.txt")))
 
 
 if __name__ == "__main__":

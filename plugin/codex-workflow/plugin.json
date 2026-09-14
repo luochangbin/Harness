@@ -1,0 +1,24 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "codex-workflow",
+  "version": "0.2.0",
+  "description": "企业项目的轻量 Codex 规范工作流、可选审核-修复自动循环与 OpenCode Server 执行器",
+  "author": {
+    "name": "Harness"
+  },
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Codex Workflow",
+        "shortDescription": "Codex 规范工作流与 OpenCode Server",
+        "longDescription": "Codex 规范工作流与项目级 OpenCode Server 执行器。",
+        "developerName": "Harness",
+        "category": "Developer Tools",
+        "capabilities": [],
+        "defaultPrompt": [
+          "按 codex-workflow 管理当前项目。"
+        ]
+      }
+    }
+  }
+}

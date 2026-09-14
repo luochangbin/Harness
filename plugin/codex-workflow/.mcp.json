@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "codex-workflow-opencode": {
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/mcp/index.js"]
+    }
+  }
+}

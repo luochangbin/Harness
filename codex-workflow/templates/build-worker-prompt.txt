@@ -1,7 +1,7 @@
 你是本次 AR 的 Build Worker。读取当前仓库规则，以及
 codespec/changes/{{AR_CHANGE}}/spec.md、design.md、tasks.md。
-本次任务批次是：{{TASK_BATCH}}。
-只实现本批次列出的未完成任务并运行其中要求的测试；`all` 才表示处理全部未完成任务。
+本次任务批次是：{{TASK_BATCH}}。该批次对应 design.md 中的一个完整实施 Phase；历史 AR 未声明实施 Phase 时对应单一隐式 Phase。
+只实现本批次（当前实施 Phase）列出的未完成任务并运行其中要求的测试；`all` 才表示处理全部未完成任务。
 不得顺带实现其他批次，即使相邻任务看起来简单。
 full 档逐任务执行 RED→GREEN；tweak 档执行最小改动并运行相关测试。
 实现前必须真实加载 test-driven-development；遇到非预期失败时必须加载

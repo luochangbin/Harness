@@ -4,6 +4,30 @@
 合并进全量 DESIGN 的对应模块分节）。块名在本 AR 内唯一，且与主文档既有 Design 块
 不重名（ADDED）/恰好同名一次（MODIFIED）。
 
+## Delivery Contract（可运行交付契约）
+
+- 交付类型：library / cli / desktop-app / service / document
+- 启动方式：<如何启动或加载产物的简要说明>
+- 交付启动命令：<用户实际执行的唯一精确命令；library/document 写 N/A>
+- 交付访问入口：<用户实际使用的精确 URL、可执行文件或 CLI 入口；library/document 写 N/A>
+- 监听/宿主约束：<service 的明确 host:port，不使用 localhost；其他类型写 N/A>
+- 交付运行模式：keep-running / start-on-demand（library/document 写 N/A）
+- 视觉验收：required / n/a（涉及可见界面时必须为 required）
+- 最小产物：<必须产出的文件/入口>
+- 用户可观察结果：<核心场景的可观察结果>
+- 最低证据层级：<单元/组件/集成/端到端 及要求的证据层级>
+
+## 实施 Phases
+
+> Build 只按这里声明的 Phase 顺序分批，不按任务数量再次拆分或合并。不需要分阶段交付时仍声明一个 Phase。
+
+### Phase 1：<阶段名称>
+
+- 可运行结果：<本 Phase 完成后用户或调用方能够独立观察到的结果>
+- 包含任务：<tasks.md 中属于本 Phase 的全部任务 ID，如 1.1、1.2、1.3>
+- 前置依赖：<无，或此前必须通过的 Phase>
+- 验收：<本 Phase 的构建、测试、启动或场景证据>
+
 ## ADDED Design Sections（模块：<模块 id>）
 
 ### Design: <设计块名>
@@ -42,5 +66,8 @@
 
 > 验收范围只来自当前需求和 spec；默认不新增 E2E。若明确要求 E2E，再把对应场景与任务写入设计。
 
-> 注意：`## 质询记录` 与 `## 已知风险` 是 AR 历史，只随 change 目录归档，
+> CLI、desktop-app、service 的交付启动命令、访问入口和监听/宿主是单值契约。测试或
+> 验收不得临时追加参数后仍交付另一条命令；如需参数，先固化到项目启动入口再验证。
+
+> 注意：`## 实施 Phases`、`## 质询记录` 与 `## 已知风险` 是 AR 历史，只随 change 目录归档，
 > 不合并进全量 DESIGN；只有 ADDED/MODIFIED Design 块中的内容会进入全量文档。

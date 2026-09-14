@@ -43,14 +43,13 @@
 | standalone-self-recursion-block.md | OpenCode 独立控制器不得再次启动自身 |
 | worker-required-skills.md | Worker 必须真实加载限定 Skill，缺失时响亮失败 |
 | no-implicit-e2e.md | 未明确要求 E2E 时不自动新增、不阻塞流程，也不夸大验证结论 |
+| delivery-command-consistency.md | 验证命令、监听地址、交付入口与回复前运行状态必须一致 |
 | design-build-handoff.md | Design 完成后明确区分 Build 已就绪/执行中，并按原始授权决定询问或继续 |
 | windows-worker-launch.md | Windows npm 包装器由 helper 解析，中文 Prompt 不走管道且退出码不误报 |
 | worker-completion-wait.md | 等待单一进程完成事件，Worker 运行期间不轮询仓库状态 |
 | worker-external-path-recovery.md | 仓库外权限失败后复用仓库夹具和同一 session，最多恢复一次 |
-| reasoner-first-selection.md | 首次 Design 先询问，只定向探测用户选择的 Oracle CLI |
-| oracle-cli-unavailable.md | 沙箱假阴性先宿主复探；Oracle CLI 不可用时不静默切回 local |
-| oracle-cli-dry-run-boundary.md | dry-run 只验证参数；网页模型选择失败时保持 Design |
-| oracle-cli-first-login.md | 首次登录等待同一 Oracle 进程，不轮询仓库或重复启动 |
+| review-loop-per-issue-defer.md | 同一问题三次未解决暂缓并继续独立问题，不被全局门槛暂停 |
+| review-loop-uncertain-send.md | reserve 后发送不确定时对账，不重复派发、不重建 Session |
 
 ## 场景结构
 

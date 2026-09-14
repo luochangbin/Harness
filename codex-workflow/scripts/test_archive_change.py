@@ -22,6 +22,7 @@ from archive_change import (
     plan_archive,
     sha256_file,
 )
+from review_loop_support import source_fingerprint
 
 
 def _write(path, text):
@@ -37,6 +38,7 @@ def _read(path):
 
 def build_fixture(root, change="AR-001-test"):
     """构造可归档仓库：codespec/.ar/config.yaml + SPEC.md + DESIGN.md + changes/<change>/。"""
+    _write(os.path.join(root, "app.py"), "version = 1\n")
     _write(os.path.join(root, "codespec", ".ar", "config.yaml"), u'''# AR 工作流项目配置
 language: zh-CN
 modules:
@@ -154,6 +156,189 @@ modules:
         config = load_config(self.root)
         self.assertEqual(list(config.keys()), ["auth"])
 
+    def test_current_worker_and_review_state_fields_are_archive_compatible(self):
+        self._rewrite_state(u"ar: {}\n".format(self.change) + """tier: full
+phase: archive
+modules: [auth]
+worker_transport: server
+verify_result: pass
+verify_failures: 0
+archive_confirmation: confirmed
+spec_base_hash: null
+design_base_hash: null
+review_loop_id: null
+review_loop_status: null
+review_loop_issue_limit: 3
+review_loop_round: 0
+review_loop_dispatch_id: null
+review_loop_expected_revision: null
+worker_executor: opencode
+worker_agent: ar-worker
+worker_session_id: ses_test
+archived: false
+""")
+        plan = plan_archive(self.root, self.change)
+        self.assertTrue(plan["ok"], plan.get("errors"))
+
+    def test_active_review_loop_blocks_archive(self):
+        self._rewrite_state(u"ar: {}\n".format(self.change) + """tier: full
+phase: archive
+modules: [auth]
+worker_transport: server
+verify_result: pass
+verify_failures: 0
+archive_confirmation: confirmed
+spec_base_hash: null
+design_base_hash: null
+review_loop_id: LOOP-001
+review_loop_status: dispatching
+review_loop_issue_limit: 3
+review_loop_round: 1
+review_loop_dispatch_id: LOOP-001:1
+review_loop_expected_revision: 4
+worker_executor: opencode
+worker_agent: ar-worker
+worker_session_id: ses_test
+archived: false
+""")
+        plan = plan_archive(self.root, self.change)
+        self.assertFalse(plan["ok"])
+        self.assertTrue(any("review_loop" in error for error in plan["errors"]))
+
+    def test_review_loop_id_cannot_exist_without_status(self):
+        self._rewrite_state(u"ar: {}\n".format(self.change) + """tier: full
+phase: archive
+modules: [auth]
+worker_transport: server
+verify_result: pass
+verify_failures: 0
+archive_confirmation: confirmed
+spec_base_hash: null
+design_base_hash: null
+review_loop_id: LOOP-001
+review_loop_status: null
+review_loop_issue_limit: 3
+review_loop_round: 0
+review_loop_dispatch_id: null
+review_loop_expected_revision: null
+worker_executor: opencode
+worker_agent: ar-worker
+worker_session_id: ses_test
+archived: false
+""")
+        plan = plan_archive(self.root, self.change)
+        self.assertFalse(plan["ok"])
+        self.assertTrue(any("review_loop_id" in error for error in plan["errors"]))
+
+    def test_passed_review_loop_requires_all_issues_resolved(self):
+        self._rewrite_state(u"ar: {}\n".format(self.change) + """tier: full
+phase: archive
+modules: [auth]
+verify_result: pass
+archive_confirmation: confirmed
+review_loop_id: LOOP-001
+review_loop_status: passed
+review_loop_issue_limit: 3
+review_loop_round: 1
+review_loop_dispatch_id: null
+review_loop_expected_revision: null
+archived: false
+""")
+        _write(os.path.join(self.change_dir(), "verification.md"), """<!-- review-loop-state:start -->
+{"issues":{"P1":{"status":"open","attempts":1,"dispatch_ids":["LOOP-001:1"],"blocked_by":null}},"dispatches":{"LOOP-001:1":{"issues":["P1"],"reviewed":true}},"binding":{"worker_executor":"opencode","worker_transport":"server","worker_session_id":"ses_test","worker_agent":"ar-worker"}}
+<!-- review-loop-state:end -->
+""")
+        plan = plan_archive(self.root, self.change)
+        self.assertFalse(plan["ok"])
+        self.assertTrue(any("未解决问题：P1" in error for error in plan["errors"]))
+
+    def test_archive_rejects_review_result_from_replaced_worker(self):
+        self._rewrite_state(u"ar: {}\n".format(self.change) + """tier: full
+phase: archive
+modules: [auth]
+verify_result: pass
+archive_confirmation: confirmed
+review_loop_id: LOOP-001
+review_loop_status: passed
+review_loop_issue_limit: 3
+review_loop_round: 1
+review_loop_dispatch_id: null
+review_loop_expected_revision: null
+worker_executor: opencode
+worker_transport: server
+worker_agent: ar-worker
+worker_session_id: ses_new
+archived: false
+""")
+        _write(os.path.join(self.change_dir(), "verification.md"), """<!-- review-loop-state:start -->
+{"issues":{"P1":{"status":"resolved","attempts":1,"dispatch_ids":["LOOP-001:1"],"blocked_by":null}},"dispatches":{"LOOP-001:1":{"issues":["P1"],"reviewed":true}},"binding":{"worker_executor":"opencode","worker_transport":"server","worker_session_id":"ses_old","worker_agent":"ar-worker"}}
+<!-- review-loop-state:end -->
+""")
+        plan = plan_archive(self.root, self.change)
+        self.assertFalse(plan["ok"])
+        self.assertTrue(any("绑定" in error for error in plan["errors"]))
+
+    def test_archive_accepts_subagent_native_binding(self):
+        self._rewrite_state(u"ar: {}\n".format(self.change) + """tier: full
+phase: archive
+modules: [auth]
+worker_transport: native
+worker_executor: subagent
+worker_agent: native-role
+worker_session_id: native_123
+verify_result: pass
+archive_confirmation: confirmed
+archived: false
+""")
+        plan = plan_archive(self.root, self.change)
+        self.assertTrue(plan["ok"], plan.get("errors"))
+
+    def test_archive_rejects_incompatible_executor_transport(self):
+        self._rewrite_state(u"ar: {}\n".format(self.change) + """tier: full
+phase: archive
+modules: [auth]
+worker_transport: native
+worker_executor: opencode
+worker_agent: ar-worker
+worker_session_id: ses_test
+verify_result: pass
+archive_confirmation: confirmed
+archived: false
+""")
+        plan = plan_archive(self.root, self.change)
+        self.assertFalse(plan["ok"])
+        self.assertTrue(any("opencode" in error and "transport" in error
+                            for error in plan["errors"]))
+
+    def test_archive_rejects_source_changed_after_review_pass(self):
+        self._rewrite_state(u"ar: {}\n".format(self.change) + """tier: full
+phase: archive
+modules: [auth]
+verify_result: pass
+archive_confirmation: confirmed
+review_loop_id: LOOP-001
+review_loop_status: passed
+review_loop_issue_limit: 3
+review_loop_round: 1
+review_loop_dispatch_id: null
+review_loop_expected_revision: null
+worker_executor: opencode
+worker_transport: server
+worker_agent: ar-worker
+worker_session_id: ses_test
+archived: false
+""")
+        marker = """<!-- review-loop-state:start -->
+{"issues":{"P1":{"status":"resolved","attempts":1,"dispatch_ids":["LOOP-001:1"],"blocked_by":null}},"dispatches":{"LOOP-001:1":{"issues":["P1"],"reviewed":true}},"binding":{"worker_executor":"opencode","worker_transport":"server","worker_session_id":"ses_test","worker_agent":"ar-worker"},"source_fingerprint":"__FINGERPRINT__"}
+<!-- review-loop-state:end -->
+""".replace("__FINGERPRINT__", source_fingerprint(self.root, self.change))
+        _write(os.path.join(self.change_dir(), "verification.md"), marker)
+        self.assertTrue(plan_archive(self.root, self.change)["ok"])
+        _write(os.path.join(self.change_dir(), "spec.md"), "改后的需求\n")
+        plan = plan_archive(self.root, self.change)
+        self.assertFalse(plan["ok"])
+        self.assertTrue(any("源码已变化" in error for error in plan["errors"]))
+
     # ---- 测试 1：plan_archive dry-run 零写入 ----
     def test_plan_dry_run_no_writes(self):
         before = all_file_hashes(self.root)
@@ -170,6 +355,14 @@ modules:
         payload = json.loads(out.getvalue())
         self.assertTrue(payload["ok"])
         self.assertEqual(all_file_hashes(self.root), before)
+
+    def test_plan_accepts_markdown_bullet_for_affected_modules(self):
+        spec_path = os.path.join(self.change_dir(), "spec.md")
+        text = _read(spec_path).replace("影响模块：auth", "- 影响模块：auth")
+        _write(spec_path, text)
+        plan = plan_archive(self.root, self.change)
+        self.assertTrue(plan["ok"], plan.get("errors"))
+        self.assertEqual(plan["affected_modules"], ["auth"])
 
     # ---- 测试 2：phase != archive 拒绝 ----
     def test_plan_rejects_non_archive_phase(self):

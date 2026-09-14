@@ -1,0 +1,18 @@
+{
+  "name": "@codex-workflow/opencode-broker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "npm run build && node --test --import ./test/temp-cleanup.js test/**/*.test.js",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "zod": "^4.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.12",
+    "typescript": "^5.9.0"
+  }
+}

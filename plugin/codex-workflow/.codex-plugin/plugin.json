@@ -1,0 +1,19 @@
+{
+  "name": "codex-workflow",
+  "version": "0.1.0",
+  "description": "企业项目的轻量 Codex 规范工作流与 OpenCode Server 执行器",
+  "author": {
+    "name": "Harness"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Codex Workflow",
+    "shortDescription": "Codex 规范工作流与 OpenCode Server",
+    "longDescription": "Codex 规范工作流与项目级 OpenCode Server 执行器。",
+    "developerName": "Harness",
+    "category": "Developer Tools",
+    "capabilities": [],
+    "defaultPrompt": "按 codex-workflow 管理当前项目。"
+  },
+  "mcpServers": "./.mcp.json"
+}

@@ -74,6 +74,32 @@ class DefaultExecutorReadTest(unittest.TestCase):
             es.read_default_executor(self.root)
 
 
+class OpencodeTransportReadTest(unittest.TestCase):
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.root = self._td.name
+        os.makedirs(os.path.join(self.root, "codespec", ".ar"))
+        self.config = os.path.join(self.root, "codespec", ".ar", "config.yaml")
+        self.addCleanup(self._td.cleanup)
+
+    def test_missing_field_defaults_to_server(self):
+        _write(self.config, CONFIG_WITH_MODULES)
+        self.assertEqual(es.read_opencode_transport(self.root), "server")
+
+    def test_explicit_null_maps_to_legacy_cli(self):
+        _write(self.config, "language: zh-CN\nopencode_transport: null\nmodules: []\n")
+        self.assertEqual(es.read_opencode_transport(self.root), "cli")
+
+    def test_explicit_cli_is_kept(self):
+        _write(self.config, "language: zh-CN\nopencode_transport: cli\nmodules: []\n")
+        self.assertEqual(es.read_opencode_transport(self.root), "cli")
+
+    def test_invalid_value_fails(self):
+        _write(self.config, "opencode_transport: udp\n")
+        with self.assertRaises(ValueError):
+            es.read_opencode_transport(self.root)
+
+
 class OpencodeWorkerAgentConfigReadTest(unittest.TestCase):
     """Protects the optional project-level OpenCode worker profile contract."""
 
@@ -406,7 +432,7 @@ class InspectCommandTest(unittest.TestCase):
         self.assertTrue(data["persist_after_confirmation"])
         self.assertEqual(data["reason_code"], "FIRST_BUILD_SELECTION_REQUIRED")
         self.assertEqual(data["choices"],
-                         ["opencode", "claude", "other", "current"])
+                         ["current", "subagent", "opencode"])
         detect.assert_not_called()
 
     def test_restricted_sandbox_still_asks_before_targeted_probe(self):
@@ -445,7 +471,7 @@ class InspectCommandTest(unittest.TestCase):
         code, out = self._run(["--controller-runtime", "opencode"])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out)["choices"],
-                         ["claude", "other", "current"])
+                         ["current", "subagent", "opencode"])
 
     def test_configured_external_use(self):
         _write(self.config, "default_executor: claude\nmodules: []\n")
@@ -638,6 +664,23 @@ class WorkerSessionReadTest(unittest.TestCase):
                              "agent": "ar-worker-deepseek",
                              "id": "ses_abc123"})
 
+    def test_explicit_server_transport_is_read_and_validated(self):
+        self._state(OLD_STATE.replace(
+            "design_base_hash: null",
+            "design_base_hash: null\nworker_executor: opencode\n"
+            "worker_transport: server\nworker_session_id: ses_abc123"))
+        self.assertEqual(
+            es.read_worker_session(self.root, "AR-001-test")["transport"],
+            "server")
+
+    def test_explicit_null_transport_on_bound_executor_fails_closed(self):
+        self._state(OLD_STATE.replace(
+            "design_base_hash: null",
+            "design_base_hash: null\nworker_executor: opencode\n"
+            "worker_transport: null\nworker_session_id: ses_abc123"))
+        with self.assertRaises(ValueError):
+            es.read_worker_session(self.root, "AR-001-test")
+
     def test_legacy_opencode_binding_has_no_agent(self):
         self._state(OLD_STATE.replace(
             "design_base_hash: null",
@@ -709,6 +752,17 @@ class WorkerSessionWriteTest(unittest.TestCase):
         self.assertEqual(es.read_worker_session(self.root, "AR-001-test")["agent"],
                          "ar-worker-deepseek")
 
+    def test_write_server_transport_persists_explicitly(self):
+        _state_dir(self.root)
+        _write(_state_path(self.root), OLD_STATE)
+        es.write_worker_session(self.root, "AR-001-test", "opencode",
+                                "ses_server", transport="server")
+        self.assertIn("worker_transport: server",
+                      _read(_state_path(self.root)))
+        self.assertEqual(
+            es.read_worker_session(self.root, "AR-001-test")["transport"],
+            "server")
+
     def test_clear_sets_both_null(self):
         _state_dir(self.root)
         _write(_state_path(self.root), NEW_STATE)
@@ -772,6 +826,26 @@ class WorkerSessionWriteTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             es.write_worker_session(self.root, "AR-001-test", "current", "x")
         self.assertEqual(_read(_state_path(self.root)), before)
+
+
+class GitRepositoryTest(unittest.TestCase):
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.root = self._td.name
+        self.addCleanup(self._td.cleanup)
+
+    def test_ensure_git_repository_initializes_missing_repository(self):
+        result = es.ensure_git_repository(self.root)
+        self.assertTrue(result["initialized"])
+        self.assertTrue(os.path.isdir(os.path.join(self.root, ".git")))
+        again = es.ensure_git_repository(self.root)
+        self.assertFalse(again["initialized"])
+
+    def test_ensure_git_repository_reuses_existing_repository(self):
+        subprocess.run(["git", "-C", self.root, "init"], check=True,
+                       capture_output=True)
+        result = es.ensure_git_repository(self.root)
+        self.assertFalse(result["initialized"])
 
 
 class BuildWorkerArgvTest(unittest.TestCase):
@@ -1116,6 +1190,42 @@ class SnapshotCompareTest(unittest.TestCase):
                                      before[rel], rel)
 
 
+class WorkspaceSnapshotCompareTest(unittest.TestCase):
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.root = self._td.name
+        _write(os.path.join(self.root, "index.html"), "v1\n")
+        _write(os.path.join(self.root, "src", "app.js"), "v1\n")
+        os.makedirs(os.path.join(self.root, ".git"))
+        _write(os.path.join(self.root, ".git", "ignored"), "v1\n")
+        self.addCleanup(self._td.cleanup)
+
+    def test_detects_untracked_existing_file_changes_and_ignores_git(self):
+        snap = es.create_workspace_snapshot(self.root)
+        _write(os.path.join(self.root, "index.html"), "v2\n")
+        _write(os.path.join(self.root, "new.txt"), "added\n")
+        _write(os.path.join(self.root, ".git", "ignored"), "v2\n")
+        result = es.compare_workspace_snapshot(self.root, snap)
+        self.assertTrue(result["changed"])
+        self.assertEqual(result["changes"]["modified"], ["index.html"])
+        self.assertEqual(result["changes"]["added"], ["new.txt"])
+        self.assertEqual(result["changes"]["removed"], [])
+
+    def test_tracks_preexisting_file_inside_dist(self):
+        path = os.path.join(self.root, "dist", "app.js")
+        _write(path, "v1\n")
+        snap = es.create_workspace_snapshot(self.root)
+        _write(path, "v2\n")
+        result = es.compare_workspace_snapshot(self.root, snap)
+        self.assertEqual(result["changes"]["modified"], ["dist/app.js"])
+    def test_snapshot_detects_removed_file(self):
+        snap = es.create_workspace_snapshot(self.root)
+        os.remove(os.path.join(self.root, "src", "app.js"))
+        result = es.compare_workspace_snapshot(self.root, snap)
+        self.assertEqual(result["changes"]["removed"], ["src/app.js"])
+        self.assertTrue(os.path.isabs(snap))
+
+
 class SnapshotCommandTest(unittest.TestCase):
     def setUp(self):
         self._td = tempfile.TemporaryDirectory()
@@ -1430,6 +1540,20 @@ class WorkerRunSupportTest(unittest.TestCase):
         self.assertEqual(_read(result["stdout_path"]).strip(), "done")
         self.assertEqual(_read(result["stderr_path"]).strip(), "failed")
 
+    def test_run_worker_timeout_stops_process_and_reports_boundary(self):
+        code = "import time; time.sleep(30)"
+
+        started = __import__("time").monotonic()
+        result = es.run_worker_process(
+            [sys.executable, "-c", code], self.root,
+            which=lambda _: sys.executable, platform=os.name,
+            timeout_seconds=0.1)
+
+        self.assertLess(__import__("time").monotonic() - started, 10)
+        self.assertTrue(result["completed"])
+        self.assertTrue(result["timed_out"])
+        self.assertEqual(result["timeout_seconds"], 0.1)
+
 
 class WorkerRunCommandTest(unittest.TestCase):
     def setUp(self):
@@ -1449,6 +1573,11 @@ class WorkerRunCommandTest(unittest.TestCase):
         self._td.cleanup()
 
     def _run(self, result):
+        result = dict(result)
+        result.setdefault("workspace_check", {
+            "ok": True, "changed": False,
+            "changes": {"added": [], "removed": [], "modified": []},
+        })
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf), \
                 mock.patch("executor_support.run_worker_with_codespec_guard",
@@ -1497,6 +1626,25 @@ class WorkerRunCommandTest(unittest.TestCase):
         self.assertFalse(out["ok"])
         self.assertEqual(out["worker_exit_code"], 9)
 
+    def test_timeout_is_distinct_and_keeps_recoverable_opencode_session(self):
+        code, out = self._run({
+            "completed": True,
+            "timed_out": True,
+            "timeout_seconds": 1800,
+            "worker_exit_code": -1,
+            "stdout_path": self.stdout_path,
+            "stderr_path": self.stderr_path,
+            "launch_argv": ["C:/tools/opencode.exe", "run"],
+            "codespec_check": {"ok": True, "changed": False,
+                               "changes": {"added": [], "removed": [],
+                                           "modified": []}},
+        })
+
+        self.assertEqual(code, 7)
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error"], "Worker 超时并已停止")
+        self.assertEqual(out["sessionID"], "ses_test")
+
     def test_codespec_mutation_cannot_be_reported_as_success(self):
         code, out = self._run({
             "completed": True,
@@ -1526,6 +1674,7 @@ class GuardedWorkerRunTest(unittest.TestCase):
         self.root = self._td.name
         os.makedirs(os.path.join(self.root, "codespec"))
         _codespec(self.root, "SPEC.md", "v1\n")
+        _write(os.path.join(self.root, "index.html"), "initial\n")
 
     def tearDown(self):
         self._td.cleanup()
@@ -1556,6 +1705,19 @@ class GuardedWorkerRunTest(unittest.TestCase):
         self.assertFalse(result["codespec_check"]["ok"])
         self.assertEqual(result["codespec_check"]["changes"]["added"],
                          ["bad.md"])
+
+    def test_guard_reports_product_source_mutation_in_untracked_workspace(self):
+        def mutate(argv, root):
+            _write(os.path.join(root, "index.html"), "worker changed\n")
+            return self._result()
+
+        result = es.run_worker_with_codespec_guard(
+            ["opencode"], self.root, runner=mutate)
+
+        self.assertTrue(result["workspace_check"]["ok"])
+        self.assertTrue(result["workspace_check"]["changed"])
+        self.assertEqual(result["workspace_check"]["changes"]["modified"],
+                         ["index.html"])
 
 
 class ParseOpencodeSessionCommandTest(unittest.TestCase):
@@ -1624,11 +1786,24 @@ class UsageMessageTest(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             code = es.main([])
         self.assertEqual(code, 2)
-        for cmd in ("inspect", "set-default", "get-session", "set-session",
+        for cmd in ("inspect", "set-default", "ensure-git", "get-session", "set-session",
                     "probe", "clear-session", "snapshot", "check",
+                    "workspace-snapshot", "workspace-check",
                     "worker-argv", "worker-run", "parse-opencode-session",
                     "parse-opencode-usage"):
             self.assertIn(cmd, buf.getvalue())
+
+
+class EnsureGitCommandTest(unittest.TestCase):
+    def test_command_outputs_initialization_result(self):
+        with tempfile.TemporaryDirectory() as root:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = es.main(["ensure-git", "--root", root])
+            self.assertEqual(code, 0)
+            result = json.loads(buf.getvalue())
+            self.assertTrue(result["initialized"])
+            self.assertTrue(os.path.isdir(os.path.join(root, ".git")))
 
 
 if __name__ == "__main__":

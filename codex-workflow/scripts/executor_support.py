@@ -8,34 +8,106 @@
   3. 执行器决策状态机（显式 > 绑定 session > 项目默认 > 首次选择规则）
   4. 单 AR Worker session 元数据（.ar.yaml 的 worker_executor/worker_agent/worker_session_id）
   5. 外部 Build Worker 调用参数构造与一次性运行（create/resume）
-  6. codespec/ 越权检测（前后快照对比）
+  6. codespec/ 与工作区越权检测（前后快照对比）
 
 零第三方依赖（仅 Python 标准库）。统一退出码：0 成功（业务决定见 JSON）；
 2 参数/配置格式或值错误；3 文件系统/探针/启动异常；4 Worker 非零退出；
-5 Worker 修改 codespec/ 或越权检查无法完成；6 Worker 输出协议错误。
+5 Worker 修改 codespec/ 或越权检查无法完成；6 Worker 输出协议错误；
+7 Worker 达到运行时限并已停止。
 stdout 只能输出一个 UTF-8 JSON 对象。
 """
 import json
 import os
 import re
+import signal
 import shutil
 import subprocess
 import sys
 import tempfile
 import uuid
 
-VALID_EXECUTORS = ("ask", "current", "claude", "opencode")
-DISPATCH_EXECUTORS = ("current", "claude", "opencode")
-EXECUTOR_CHOICES = ("opencode", "claude", "other", "current")
+VALID_EXECUTORS = ("ask", "current", "subagent", "claude", "opencode")
+DISPATCH_EXECUTORS = ("current", "subagent", "claude", "opencode")
+EXECUTOR_CHOICES = ("current", "subagent", "opencode")
 VALID_CONTROLLER_RUNTIMES = ("codex", "claude", "opencode")
 CONFIG_PATH = os.path.join("codespec", ".ar", "config.yaml")
+VALID_TRANSPORTS = ("null", "server", "cli", "native")
 CHANGE_NAME_RE = re.compile(r"^[A-Za-z0-9-]+$")
 TASK_BATCH_RE = re.compile(
     r"^(?:all|[A-Za-z0-9_.-]+(?:,[A-Za-z0-9_.-]+)*)$")
+DEFAULT_WORKER_TIMEOUT_SECONDS = 1800
+
 
 
 def _config_file(root):
     return os.path.join(root, CONFIG_PATH)
+
+
+def ensure_git_repository(root, run=subprocess.run):
+    """Ensure the project root is covered by a Git repository.
+
+    Existing parent repositories are reused. A missing repository is initialized
+    deterministically before Build snapshots or diff checks are created.
+    """
+    root = os.path.abspath(root)
+    if not os.path.isdir(root):
+        raise ValueError("项目根目录不存在：{}".format(root))
+    try:
+        probe = run(
+            ["git", "-C", root, "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise OSError("Git 探测失败：{}".format(exc))
+    if probe.returncode == 0 and probe.stdout.strip():
+        return {
+            "initialized": False,
+            "root": root,
+            "git_root": os.path.abspath(probe.stdout.strip()),
+        }
+    try:
+        created = run(
+            ["git", "-C", root, "init"],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise OSError("Git 初始化失败：{}".format(exc))
+    if created.returncode != 0:
+        detail = (created.stderr or created.stdout or "").strip()
+        raise OSError("Git 初始化失败：{}".format(detail or "未知错误"))
+    return {
+        "initialized": True,
+        "root": root,
+        "git_root": root,
+    }
+
+
+def read_opencode_transport(root):
+    """Read project OpenCode transport.
+
+    Missing field means ``server`` for new ARs; an explicit ``null`` keeps the
+    documented legacy CLI behavior. Invalid values fail closed.
+    """
+    path = _config_file(root)
+    if not os.path.isfile(path):
+        raise FileNotFoundError("缺少项目配置：{}".format(path))
+    found = None
+    seen = False
+    with open(path, encoding="utf-8") as f:
+        for line_num, line in enumerate(f, 1):
+            m = re.match(r"^opencode_transport:\s*(.*)$", line.rstrip("\n"))
+            if not m:
+                continue
+            if seen:
+                raise ValueError("第 {} 行重复字段：opencode_transport".format(line_num))
+            seen = True
+            raw = _parse_scalar(m.group(1).strip())
+            if raw not in ("server", "cli", None):
+                raise ValueError("第 {} 行非法 opencode_transport：{}".format(line_num, raw))
+            found = raw
+    if not seen:
+        return "server"
+    return "cli" if found is None else found
 
 
 # ---------- 项目级默认执行器 ----------
@@ -249,7 +321,7 @@ def resolve_with_session(mode, explicit, configured, available_external,
             return {"decision": "use", "selected": bound_executor,
                     "persist_after_confirmation": False,
                     "reason_code": "AR_BOUND_SESSION"}
-        if restricted_sandbox:
+        if restricted_sandbox and bound_executor != "subagent":
             return {"decision": "host_probe", "selected": None,
                     "persist_after_confirmation": False,
                     "reason_code": "RESTRICTED_SANDBOX_HOST_PROBE"}
@@ -284,7 +356,7 @@ def resolve_executor(mode, explicit, configured, available_external,
             return {"decision": "use", "selected": "current",
                     "persist_after_confirmation": False,
                     "reason_code": "EXPLICIT_CURRENT"}
-        if explicit in ("claude", "opencode"):
+        if explicit in ("subagent", "claude", "opencode"):
             if explicit == controller_runtime:
                 return {"decision": "use", "selected": "current",
                         "persist_after_confirmation": False,
@@ -293,7 +365,7 @@ def resolve_executor(mode, explicit, configured, available_external,
                 return {"decision": "use", "selected": explicit,
                         "persist_after_confirmation": False,
                         "reason_code": "EXPLICIT_EXTERNAL_OK"}
-            if restricted_sandbox:
+            if restricted_sandbox and explicit != "subagent":
                 return {"decision": "host_probe", "selected": None,
                         "persist_after_confirmation": False,
                         "reason_code": "RESTRICTED_SANDBOX_HOST_PROBE"}
@@ -306,7 +378,7 @@ def resolve_executor(mode, explicit, configured, available_external,
             return {"decision": "use", "selected": "current",
                     "persist_after_confirmation": False,
                     "reason_code": "CONFIGURED_CURRENT"}
-        if configured in ("claude", "opencode"):
+        if configured in ("subagent", "claude", "opencode"):
             if configured == controller_runtime:
                 return {"decision": "use", "selected": "current",
                         "persist_after_confirmation": False,
@@ -315,7 +387,7 @@ def resolve_executor(mode, explicit, configured, available_external,
                 return {"decision": "use", "selected": configured,
                         "persist_after_confirmation": False,
                         "reason_code": "CONFIGURED_EXTERNAL_OK"}
-            if restricted_sandbox:
+            if restricted_sandbox and configured != "subagent":
                 return {"decision": "host_probe", "selected": None,
                         "persist_after_confirmation": False,
                         "reason_code": "RESTRICTED_SANDBOX_HOST_PROBE"}
@@ -349,21 +421,31 @@ def _parse_scalar(raw):
     return raw
 
 
-def _validate_session_pair(executor, session_id, agent=None):
+def _validate_session_pair(executor, session_id, agent=None, transport=None):
     """Validate an executor/session binding and optional OpenCode agent."""
-    if executor is None and session_id is None and agent is None:
+    if transport is None and executor is not None:
+        transport = "native" if executor == "subagent" else "cli"
+    if executor is None and session_id is None and agent is None and transport in (None, "null"):
         return
-    if executor is None or session_id is None:
-        raise ValueError("worker_executor/worker_agent/worker_session_id 状态不完整")
-    if executor not in ("claude", "opencode"):
+    if executor is None or session_id is None or transport in (None, "null"):
+        raise ValueError("worker_executor/worker_transport/worker_agent/worker_session_id 状态不完整")
+    if executor not in ("subagent", "claude", "opencode"):
         raise ValueError("非法 worker_executor：{}".format(executor))
     if not isinstance(session_id, str) or not session_id:
         raise ValueError("worker_session_id 为空")
     if any(ord(c) < 32 or ord(c) == 127 for c in session_id):
         raise ValueError("worker_session_id 含控制字符")
     _validate_worker_agent(agent)
-    if executor != "opencode" and agent is not None:
-        raise ValueError("worker_agent 只适用于 opencode")
+    if transport not in ("server", "cli", "native"):
+        raise ValueError("非法 worker_transport：{}".format(transport))
+    if executor == "subagent" and transport != "native":
+        raise ValueError("subagent 必须使用 native transport")
+    if executor == "opencode" and transport not in ("server", "cli"):
+        raise ValueError("opencode 必须使用 server 或 cli transport")
+    if executor == "claude" and transport != "cli":
+        raise ValueError("claude 只能使用 cli transport")
+    if executor not in ("opencode", "subagent") and agent is not None:
+        raise ValueError("worker_agent 只适用于 opencode/subagent")
     if executor == "claude":
         try:
             norm = str(uuid.UUID(session_id))
@@ -373,11 +455,11 @@ def _validate_session_pair(executor, session_id, agent=None):
             raise ValueError("claude session id 非规范形式：{}".format(session_id))
     else:
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", session_id):
-            raise ValueError("opencode session id 非法：{!r}".format(session_id))
+            raise ValueError("{} session id 非法：{!r}".format(executor, session_id))
 
 
 def read_worker_session(root, change):
-    """读取 .ar.yaml 的 worker_executor/worker_agent/worker_session_id。
+    """读取 .ar.yaml 的 worker_executor/worker_transport/worker_agent/worker_session_id。
 
     旧 AR 缺少全部绑定字段等价于三者为 null → 返回 None；已有旧式
     executor/session 绑定但无 worker_agent 时保留 agent=None。
@@ -390,10 +472,12 @@ def read_worker_session(root, change):
     executor = None
     agent = None
     session_id = None
+    transport = None
+    transport_seen = False
     seen = set()
     with open(path, encoding="utf-8") as f:
         for line_num, line in enumerate(f, 1):
-            m = re.match(r"^(worker_executor|worker_agent|worker_session_id):\s*(.*)$",
+            m = re.match(r"^(worker_executor|worker_transport|worker_agent|worker_session_id):\s*(.*)$",
                          line.rstrip("\n"))
             if not m:
                 continue
@@ -404,17 +488,31 @@ def read_worker_session(root, change):
             raw = _parse_scalar(m.group(2).strip())
             if key == "worker_executor":
                 executor = raw
+            elif key == "worker_transport":
+                transport = raw
+                transport_seen = True
             elif key == "worker_agent":
                 agent = raw
             else:
                 session_id = raw
-    _validate_session_pair(executor, session_id, agent)
+    # An old AR has no transport field and must remain a legacy CLI binding.
+    # An explicit ``worker_transport: null`` on a bound executor is incomplete
+    # and must fail closed instead of being silently coerced to CLI.
+    if transport_seen and transport is None and executor is not None:
+        raise ValueError("worker_transport 显式为 null，无法确定绑定传输；请显式写 server 或 cli")
+    validation_transport = transport if transport_seen else (
+        "native" if executor == "subagent" else "cli"
+        if executor in ("claude", "opencode") else "null")
+    _validate_session_pair(executor, session_id, agent, validation_transport)
     if executor is None:
         return None
-    return {"executor": executor, "agent": agent, "id": session_id}
+    result = {"executor": executor, "agent": agent, "id": session_id}
+    if transport_seen and transport is not None:
+        result["transport"] = transport
+    return result
 
 
-def _upsert_state_pair(root, change, executor, session_id, agent=None):
+def _upsert_state_pair(root, change, executor, session_id, agent=None, transport=None):
     """原子更新当前 change 的 Worker binding，保留其他字段、注释和顺序。
 
     修改前先严格读取校验现有状态：损坏（含重复字段）→ ValueError，保持原文件
@@ -427,18 +525,32 @@ def _upsert_state_pair(root, change, executor, session_id, agent=None):
     read_worker_session(root, change)
     with open(path, encoding="utf-8") as f:
         lines = f.readlines()
+    transport_line = transport
+    if executor is None and session_id is None and agent is None:
+        transport = "null"
+        transport_line = "null"
+    elif transport is None:
+        # Old callers are kept on the CLI transport; Server callers must pass
+        # transport="server" explicitly.
+        transport = "native" if executor == "subagent" else "cli"
+    if transport not in VALID_TRANSPORTS:
+        raise ValueError("非法 worker_transport：{}".format(transport))
     new_exec = "worker_executor: {}\n".format(executor if executor else "null")
+    new_transport = ("worker_transport: {}\n".format(transport_line)
+                     if transport_line is not None else None)
     new_agent = "worker_agent: {}\n".format(agent if agent else "null")
     new_id = "worker_session_id: {}\n".format(session_id if session_id else "null")
     out = []
     inserted = False
     for line in lines:
-        if line.startswith(("worker_executor:", "worker_agent:",
+        if line.startswith(("worker_executor:", "worker_transport:", "worker_agent:",
                             "worker_session_id:")):
             continue
         out.append(line)
         if not inserted and line.startswith("design_base_hash:"):
             out.append(new_exec)
+            if new_transport is not None:
+                out.append(new_transport)
             out.append(new_agent)
             out.append(new_id)
             inserted = True
@@ -447,11 +559,15 @@ def _upsert_state_pair(root, change, executor, session_id, agent=None):
         if anchor is not None:
             out.insert(anchor, new_id)
             out.insert(anchor, new_agent)
+            if new_transport is not None:
+                out.insert(anchor, new_transport)
             out.insert(anchor, new_exec)
         else:
             if out and not out[-1].endswith("\n"):
                 out[-1] += "\n"
             out.append(new_exec)
+            if new_transport is not None:
+                out.append(new_transport)
             out.append(new_agent)
             out.append(new_id)
     d = os.path.dirname(path)
@@ -468,15 +584,16 @@ def _upsert_state_pair(root, change, executor, session_id, agent=None):
         raise
 
 
-def write_worker_session(root, change, executor, session_id, agent=None):
+def write_worker_session(root, change, executor, session_id, agent=None, transport=None):
     """原子写入本 AR 的外部 Worker session（只写当前 change，不写项目默认值）。"""
-    _validate_session_pair(executor, session_id, agent)
-    _upsert_state_pair(root, change, executor, session_id, agent)
+    validation_transport = transport or ("native" if executor == "subagent" else "cli")
+    _validate_session_pair(executor, session_id, agent, validation_transport)
+    _upsert_state_pair(root, change, executor, session_id, agent, transport)
 
 
 def clear_worker_session(root, change):
     """清除本 AR 的 session 绑定（三字段置 null）。"""
-    _upsert_state_pair(root, change, None, None, None)
+    _upsert_state_pair(root, change, None, None, None, "null")
 
 
 # ---------- 外部 Worker 调用参数构造 ----------
@@ -539,29 +656,76 @@ def resolve_launch_argv(argv, which=shutil.which, platform=os.name):
     return [executable] + list(argv[1:])
 
 
+def _stop_worker_process(process, platform):
+    """Stop the exact Worker process tree after a controller timeout."""
+    if process.poll() is not None:
+        return
+    if platform == "nt":
+        try:
+            stopped = subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, check=False,
+            )
+            if stopped.returncode != 0 and process.poll() is None:
+                process.terminate()
+        except OSError:
+            process.terminate()
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except (OSError, AttributeError):
+            process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        if platform != "nt":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (OSError, AttributeError):
+                process.kill()
+        else:
+            process.kill()
+        process.wait()
+
+
 def run_worker_process(argv, root, which=shutil.which, platform=os.name,
-                       popen=subprocess.Popen):
-    """Run one Worker, wait for completion, and capture its exact exit status."""
+                       popen=subprocess.Popen,
+                       timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS):
+    """Run one Worker with a hard boundary and capture its exact exit status."""
     if not root or not os.path.isdir(root):
         raise ValueError("仓库根目录不存在：{}".format(root))
+    if isinstance(timeout_seconds, bool) or not isinstance(
+            timeout_seconds, (int, float)) or timeout_seconds <= 0:
+        raise ValueError("Worker timeout 必须是正数秒")
     launch_argv = resolve_launch_argv(argv, which=which, platform=platform)
     output_dir = tempfile.mkdtemp(prefix="ar-worker-")
     stdout_path = os.path.join(output_dir, "stdout.log")
     stderr_path = os.path.join(output_dir, "stderr.log")
     with open(stdout_path, "wb") as stdout_file, \
             open(stderr_path, "wb") as stderr_file:
-        process = popen(
-            launch_argv,
-            cwd=os.path.abspath(root),
-            stdin=subprocess.DEVNULL,
-            stdout=stdout_file,
-            stderr=stderr_file,
-            shell=False,
-        )
-        return_code = process.wait()
+        popen_kwargs = {
+            "cwd": os.path.abspath(root),
+            "stdin": subprocess.DEVNULL,
+            "stdout": stdout_file,
+            "stderr": stderr_file,
+            "shell": False,
+        }
+        if platform != "nt":
+            popen_kwargs["start_new_session"] = True
+        process = popen(launch_argv, **popen_kwargs)
+        timed_out = False
+        try:
+            return_code = process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _stop_worker_process(process, platform)
+            return_code = process.returncode
     return {
         "completed": True,
         "worker_exit_code": return_code,
+        "timed_out": timed_out,
+        "timeout_seconds": timeout_seconds,
         "stdout_path": stdout_path,
         "stderr_path": stderr_path,
         "launch_executable": launch_argv[0],
@@ -741,17 +905,34 @@ def _codespec_entries(root):
     return entries
 
 
-def create_codespec_snapshot(root):
-    """对 root/codespec/ 下全部普通文件记录相对路径和 SHA-256，写入系统临时目录。
+WORKSPACE_EXCLUDED_DIRS = frozenset({
+    ".git", "node_modules", ".venv", "venv", "__pycache__",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache", ".cache",
+})
 
-    快照内记录规范化 root，防止跨仓库误用；不复制文件内容。
-    返回快照 JSON 绝对路径。
-    """
+
+def _workspace_entries(root):
+    """递归工作区普通文件，排除版本库、依赖和缓存目录；交付目录仍受监控。"""
+    entries = {}
+    root_abs = os.path.abspath(root)
+    for dirpath, dirnames, filenames in os.walk(root_abs):
+        dirnames[:] = [name for name in dirnames
+                       if name not in WORKSPACE_EXCLUDED_DIRS]
+        for fn in filenames:
+            p = os.path.join(dirpath, fn)
+            if not os.path.isfile(p):
+                continue
+            rel = os.path.relpath(p, root_abs).replace(os.sep, "/")
+            entries[rel] = _sha256_file(p)
+    return entries
+
+
+def _create_snapshot(root, entries, prefix):
     payload = {
         "root": os.path.normcase(os.path.abspath(root)),
-        "files": _codespec_entries(root),
+        "files": entries,
     }
-    fd, path = tempfile.mkstemp(prefix="ar-codespec-", suffix=".json")
+    fd, path = tempfile.mkstemp(prefix=prefix, suffix=".json")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, sort_keys=True)
@@ -762,6 +943,15 @@ def create_codespec_snapshot(root):
             pass
         raise
     return path
+
+
+def create_codespec_snapshot(root):
+    """对 root/codespec/ 下全部普通文件记录相对路径和 SHA-256，写入系统临时目录。
+
+    快照内记录规范化 root，防止跨仓库误用；不复制文件内容。
+    返回快照 JSON 绝对路径。
+    """
+    return _create_snapshot(root, _codespec_entries(root), "ar-codespec-")
 
 
 def compare_codespec_snapshot(root, snapshot_path):
@@ -798,7 +988,44 @@ def compare_codespec_snapshot(root, snapshot_path):
     return result
 
 
-def run_worker_with_codespec_guard(argv, root, runner=run_worker_process):
+def create_workspace_snapshot(root):
+    """Record the source workspace outside the repository for untracked-file safety."""
+    return _create_snapshot(root, _workspace_entries(root), "ar-workspace-")
+
+
+def compare_workspace_snapshot(root, snapshot_path):
+    """Compare the source workspace while excluding generated and VCS directories."""
+    try:
+        with open(snapshot_path, encoding="utf-8") as f:
+            payload = json.load(f)
+    except (ValueError, OSError) as e:
+        raise ValueError("workspace snapshot 读取失败：{}".format(e))
+    if not isinstance(payload, dict) or not isinstance(payload.get("files"), dict):
+        raise ValueError("workspace snapshot 结构非法")
+    if payload.get("root") != os.path.normcase(os.path.abspath(root)):
+        raise ValueError("workspace snapshot root 与目标仓库不匹配")
+    before = payload["files"]
+    now = _workspace_entries(root)
+    changes = {
+        "added": sorted(rel for rel in now if rel not in before),
+        "removed": sorted(rel for rel in before if rel not in now),
+        "modified": sorted(rel for rel in before
+                           if rel in now and before[rel] != now[rel]),
+    }
+    result = {
+        "changed": bool(changes["added"] or changes["removed"] or changes["modified"]),
+        "changes": changes,
+        "excluded_directories": sorted(WORKSPACE_EXCLUDED_DIRS),
+    }
+    try:
+        os.unlink(snapshot_path)
+    except OSError:
+        pass
+    return result
+
+
+def run_worker_with_codespec_guard(argv, root, runner=run_worker_process,
+                                   timeout_seconds=None):
     """Snapshot, run and compare inside one helper-owned lifetime.
 
     The snapshot path never crosses the process boundary. A comparison error is
@@ -806,11 +1033,19 @@ def run_worker_with_codespec_guard(argv, root, runner=run_worker_process):
     for an unchanged codespec tree.
     """
     snapshot_path = create_codespec_snapshot(root)
+    workspace_snapshot_path = create_workspace_snapshot(root)
     try:
-        result = runner(argv, root)
+        if timeout_seconds is None:
+            result = runner(argv, root)
+        else:
+            result = runner(argv, root, timeout_seconds=timeout_seconds)
     except BaseException:
         try:
             compare_codespec_snapshot(root, snapshot_path)
+        except (ValueError, OSError):
+            pass
+        try:
+            compare_workspace_snapshot(root, workspace_snapshot_path)
         except (ValueError, OSError):
             pass
         raise
@@ -818,6 +1053,10 @@ def run_worker_with_codespec_guard(argv, root, runner=run_worker_process):
     try:
         comparison = compare_codespec_snapshot(root, snapshot_path)
     except (ValueError, OSError) as e:
+        try:
+            compare_workspace_snapshot(root, workspace_snapshot_path)
+        except (ValueError, OSError):
+            pass
         result["codespec_check"] = {
             "ok": False,
             "changed": None,
@@ -826,6 +1065,17 @@ def run_worker_with_codespec_guard(argv, root, runner=run_worker_process):
         return result
     result["codespec_check"] = dict(
         comparison, ok=not comparison["changed"])
+    try:
+        workspace_comparison = compare_workspace_snapshot(root, workspace_snapshot_path)
+    except (ValueError, OSError) as e:
+        result["workspace_check"] = {
+            "ok": False,
+            "changed": None,
+            "error": "工作区越权检查失败：{}".format(e),
+        }
+        return result
+    result["workspace_check"] = dict(
+        workspace_comparison, ok=True)
     return result
 
 
@@ -849,7 +1099,7 @@ def main(argv=None):
             pass
     args = argv if argv is not None else sys.argv[1:]
     if not args:
-        return _fail(2, "缺少子命令：inspect | probe | set-default | get-session | set-session | clear-session | snapshot | check | worker-argv | worker-run | parse-opencode-session | parse-opencode-usage")
+        return _fail(2, "缺少子命令：inspect | probe | set-default | ensure-git | get-session | set-session | clear-session | snapshot | check | workspace-snapshot | workspace-check | worker-argv | worker-run | parse-opencode-session | parse-opencode-usage")
     cmd, rest = args[0], args[1:]
     if cmd == "inspect":
         return _cmd_inspect(rest)
@@ -857,6 +1107,8 @@ def main(argv=None):
         return _cmd_probe(rest)
     if cmd == "set-default":
         return _cmd_set_default(rest)
+    if cmd == "ensure-git":
+        return _cmd_ensure_git(rest)
     if cmd == "get-session":
         return _cmd_get_session(rest)
     if cmd == "set-session":
@@ -867,6 +1119,10 @@ def main(argv=None):
         return _cmd_snapshot(rest)
     if cmd == "check":
         return _cmd_check(rest)
+    if cmd == "workspace-snapshot":
+        return _cmd_workspace_snapshot(rest)
+    if cmd == "workspace-check":
+        return _cmd_workspace_check(rest)
     if cmd == "worker-argv":
         return _cmd_worker_argv(rest)
     if cmd == "worker-run":
@@ -878,12 +1134,29 @@ def main(argv=None):
     return _fail(2, "未知子命令：{}".format(cmd))
 
 
+def _cmd_ensure_git(rest):
+    import argparse
+    parser = argparse.ArgumentParser(prog="executor_support ensure-git")
+    parser.add_argument("--root", required=True)
+    try:
+        ns = parser.parse_args(rest)
+        result = ensure_git_repository(ns.root)
+    except SystemExit as e:
+        return _argparse_exit_code(e)
+    except (ValueError, OSError) as e:
+        return _fail(3, str(e))
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
 def _cmd_inspect(rest):
     import argparse
     parser = argparse.ArgumentParser(prog="executor_support inspect")
     parser.add_argument("--root", required=True)
     parser.add_argument("--mode", choices=("ar", "bugfix"), default="ar")
     parser.add_argument("--explicit", choices=DISPATCH_EXECUTORS, default=None)
+    parser.add_argument("--subagent-available", action="store_true",
+                        help="Controller has verified native spawn and follow-up tools")
     parser.add_argument("--change", default=None,
                         help="当前 AR 名；提供时按「显式 > AR 绑定 > 项目默认」完整决策")
     parser.add_argument("--controller-runtime", choices=VALID_CONTROLLER_RUNTIMES,
@@ -896,6 +1169,7 @@ def _cmd_inspect(rest):
         ns = parser.parse_args(rest)
         configured = read_default_executor(ns.root)
         configured_worker_agent = read_opencode_worker_agent(ns.root)
+        opencode_transport = read_opencode_transport(ns.root)
         bound_executor = None
         bound_agent = None
         if ns.change:
@@ -909,6 +1183,8 @@ def _cmd_inspect(rest):
         available = []
         if target in ("claude", "opencode") and target != ns.controller_runtime:
             available = detect_external_executors(names=[target])
+        if ns.subagent_available and ns.controller_runtime == "codex":
+            available.append("subagent")
         decision = resolve_with_session(ns.mode, ns.explicit, configured,
                                         available, bound_executor,
                                         restricted_sandbox=ns.restricted_sandbox,
@@ -922,13 +1198,16 @@ def _cmd_inspect(rest):
     out = {
         "configured": configured,
         "configured_worker_agent": configured_worker_agent,
+        "opencode_transport": opencode_transport,
+        "configured_transport": opencode_transport,
         "bound_executor": bound_executor,
         "bound_agent": bound_agent,
+        "bound_transport": (session.get("transport") if ns.change and session is not None else None),
         "controller_runtime": ns.controller_runtime,
         "available_external": [x for x in available
-                               if x != ns.controller_runtime],
-        "choices": [choice for choice in EXECUTOR_CHOICES
-                    if choice != ns.controller_runtime],
+                               if x != ns.controller_runtime and x != "subagent"],
+        "subagent_available": "subagent" in available,
+        "choices": list(EXECUTOR_CHOICES),
         "decision": decision["decision"],
         "selected": decision["selected"],
         "persist_after_confirmation": decision["persist_after_confirmation"],
@@ -986,6 +1265,8 @@ def _session_payload(session):
     payload = {"executor": session["executor"], "id": session["id"]}
     if session.get("agent") is not None:
         payload["agent"] = session["agent"]
+    if session.get("transport") is not None:
+        payload["transport"] = session["transport"]
     return {"session": payload}
 
 
@@ -1012,13 +1293,14 @@ def _cmd_set_session(rest):
     parser = argparse.ArgumentParser(prog="executor_support set-session")
     parser.add_argument("--root", required=True)
     parser.add_argument("--change", required=True)
-    parser.add_argument("--executor", choices=("claude", "opencode"), required=True)
+    parser.add_argument("--executor", choices=("subagent", "claude", "opencode"), required=True)
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--worker-agent", default=None)
+    parser.add_argument("--transport", choices=("server", "cli", "native"), default=None)
     try:
         ns = parser.parse_args(rest)
         write_worker_session(ns.root, ns.change, ns.executor, ns.session_id,
-                             agent=ns.worker_agent)
+                             agent=ns.worker_agent, transport=ns.transport)
     except SystemExit as e:
         return _argparse_exit_code(e)
     except ValueError as e:
@@ -1027,7 +1309,8 @@ def _cmd_set_session(rest):
         return _fail(3, "写入状态失败：{}".format(e))
     print(json.dumps(_session_payload(
         {"executor": ns.executor, "agent": ns.worker_agent,
-         "id": ns.session_id}), ensure_ascii=False))
+         "id": ns.session_id,
+         "transport": ns.transport or ("native" if ns.executor == "subagent" else "cli")}), ensure_ascii=False))
     return 0
 
 
@@ -1082,6 +1365,39 @@ def _cmd_check(rest):
     return 0
 
 
+def _cmd_workspace_snapshot(rest):
+    import argparse
+    parser = argparse.ArgumentParser(prog="executor_support workspace-snapshot")
+    parser.add_argument("--root", required=True)
+    try:
+        ns = parser.parse_args(rest)
+        path = create_workspace_snapshot(ns.root)
+    except SystemExit as e:
+        return _argparse_exit_code(e)
+    except OSError as e:
+        return _fail(3, "工作区快照失败：{}".format(e))
+    print(json.dumps({"snapshot": path}, ensure_ascii=False))
+    return 0
+
+
+def _cmd_workspace_check(rest):
+    import argparse
+    parser = argparse.ArgumentParser(prog="executor_support workspace-check")
+    parser.add_argument("--root", required=True)
+    parser.add_argument("--snapshot", required=True)
+    try:
+        ns = parser.parse_args(rest)
+        result = compare_workspace_snapshot(ns.root, ns.snapshot)
+    except SystemExit as e:
+        return _argparse_exit_code(e)
+    except ValueError as e:
+        return _fail(2, str(e))
+    except OSError as e:
+        return _fail(3, "工作区对比失败：{}".format(e))
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
 def _cmd_worker_argv(rest):
     import argparse
     parser = argparse.ArgumentParser(prog="executor_support worker-argv")
@@ -1121,6 +1437,8 @@ def _cmd_worker_run(rest):
     parser.add_argument("--worker-agent", default=None)
     parser.add_argument("--controller-runtime",
                         choices=VALID_CONTROLLER_RUNTIMES, required=True)
+    parser.add_argument("--timeout-seconds", type=int,
+                        default=DEFAULT_WORKER_TIMEOUT_SECONDS)
     try:
         ns = parser.parse_args(rest)
         prompt = load_worker_prompt(ns.prompt_file, ns.change, ns.task_batch)
@@ -1129,7 +1447,10 @@ def _cmd_worker_run(rest):
             worker_agent=ns.worker_agent,
             controller_runtime=ns.controller_runtime,
         )
-        result = run_worker_with_codespec_guard(argv, ns.root)
+        if ns.timeout_seconds <= 0:
+            raise ValueError("--timeout-seconds 必须大于 0")
+        result = run_worker_with_codespec_guard(
+            argv, ns.root, timeout_seconds=ns.timeout_seconds)
     except SystemExit as e:
         return _argparse_exit_code(e)
     except ValueError as e:
@@ -1138,13 +1459,32 @@ def _cmd_worker_run(rest):
         return _fail(3, "Worker 启动/运行异常：{}".format(e))
     result = dict(result)
     codespec_check = result.get("codespec_check")
-    if not isinstance(codespec_check, dict) or not codespec_check.get("ok"):
+    workspace_check = result.get("workspace_check")
+    if (not isinstance(codespec_check, dict) or not codespec_check.get("ok") or
+            not isinstance(workspace_check, dict) or not workspace_check.get("ok")):
         result.update({"ok": False, "error": "Worker 修改了 codespec/"
                        if isinstance(codespec_check, dict)
                        and codespec_check.get("changed") is True
+                       else "Worker 修改了工作区基线"
+                       if isinstance(workspace_check, dict)
+                       and workspace_check.get("changed") is True
                        else "Worker 越权检查未通过"})
         print(json.dumps(result, ensure_ascii=False))
         return 5
+    if result.get("timed_out") is True:
+        if ns.executor == "opencode":
+            try:
+                stdout_text = _read_utf8_input(result["stdout_path"])
+                result["sessionID"] = parse_opencode_session_id(stdout_text)
+                result["usage"] = parse_opencode_usage(stdout_text)
+            except (ValueError, OSError, UnicodeError) as e:
+                result["sessionID"] = None
+                result["session_error"] = str(e)
+        else:
+            result["sessionID"] = ns.session_id
+        result.update({"ok": False, "error": "Worker 超时并已停止"})
+        print(json.dumps(result, ensure_ascii=False))
+        return 7
     if result["worker_exit_code"] != 0:
         result.update({"ok": False, "error": "Worker 非零退出"})
         print(json.dumps(result, ensure_ascii=False))

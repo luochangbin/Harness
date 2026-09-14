@@ -23,17 +23,35 @@ import re
 import sys
 import tempfile
 from datetime import datetime
+from review_loop_support import read_loop_state, source_fingerprint
 
 # .ar.yaml 已知字段（未知字段/重复字段 → 解析报错，不猜测）
 # design_hash 已从模板移除，保留在已知字段中仅为兼容旧状态文件（不再有运行时要求）
-# worker_executor/worker_session_id 为外部 Build Worker 会话绑定（见 executor_support.py）
+# 外部 Build Worker、传输和审核-修复循环字段必须与 templates/ar-yaml.md 同步；
+# 归档只校验字段结构，不解释这些运行时字段的业务语义。
 KNOWN_STATE_FIELDS = {
     "ar", "tier", "phase", "modules", "verify_result", "verify_failures",
     "archive_confirmation", "design_hash", "spec_base_hash", "design_base_hash",
-    "worker_executor", "worker_session_id",
+    "worker_transport", "worker_executor", "worker_agent", "worker_session_id",
+    "review_loop_id", "review_loop_status", "review_loop_issue_limit",
+    "review_loop_round", "review_loop_dispatch_id",
+    "review_loop_expected_revision",
     "archived",
 }
 CHANGE_NAME_RE = re.compile(r"^[A-Za-z0-9-]+$")
+REVIEW_BINDING_FIELDS = ("worker_executor", "worker_transport", "worker_session_id", "worker_agent")
+
+
+def _review_binding_error(loop_state, state):
+    expected = {field: state.get(field) for field in REVIEW_BINDING_FIELDS}
+    recorded = loop_state.get("binding")
+    if recorded is None:
+        return "审核循环未记录当前 Worker 绑定"
+    if not isinstance(recorded, dict):
+        return "审核循环绑定结构非法"
+    if recorded != expected:
+        return "审核循环绑定与当前 Worker 不一致"
+    return None
 
 
 class ArchiveRollbackError(RuntimeError):
@@ -149,20 +167,32 @@ def parse_state(state_file):
 
 
 def _validate_session_fields(fields):
-    """校验 worker_executor/worker_session_id 成对性与合法性（fail-closed）。
-
-    两字段必须同时为 null 或同时为合法绑定；部分存在、非法执行器、
-    空 ID、控制字符或不符合执行器协议的 ID 一律拒绝。归档计划不使用
-    这两个字段做合并决策，仅作状态合法性校验。
-    """
+    """校验完整的 Worker 绑定契约（fail-closed）。"""
     executor = fields.get("worker_executor")
+    transport = fields.get("worker_transport")
     session_id = fields.get("worker_session_id")
-    if executor is None and session_id is None:
+    agent = fields.get("worker_agent")
+    if executor is None and session_id is None and agent is None and transport is None:
         return
     if executor is None or session_id is None:
         raise ValueError("worker_executor/worker_session_id 必须成对出现")
-    if executor not in ("claude", "opencode"):
+    if executor not in ("subagent", "claude", "opencode"):
         raise ValueError("非法 worker_executor：{}".format(executor))
+    if transport is None:
+        transport = "native" if executor == "subagent" else "cli"
+    if transport not in ("server", "cli", "native"):
+        raise ValueError("非法 worker_transport：{}".format(transport))
+    if executor == "subagent" and transport != "native":
+        raise ValueError("subagent 必须使用 native transport")
+    if executor == "opencode" and transport not in ("server", "cli"):
+        raise ValueError("opencode 必须使用 server 或 cli transport")
+    if executor == "claude" and transport != "cli":
+        raise ValueError("claude 只能使用 cli transport")
+    if agent is not None:
+        if executor not in ("opencode", "subagent"):
+            raise ValueError("worker_agent 只适用于 opencode/subagent")
+        if not isinstance(agent, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", agent):
+            raise ValueError("worker_agent 非法")
     if not isinstance(session_id, str) or not session_id:
         raise ValueError("worker_session_id 为空")
     if any(ord(c) < 32 or ord(c) == 127 for c in session_id):
@@ -177,7 +207,7 @@ def _validate_session_fields(fields):
             raise ValueError("claude session id 非规范形式")
     else:
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", session_id):
-            raise ValueError("opencode session id 非法")
+            raise ValueError("{} session id 非法".format(executor))
 
 
 def load_config(root):
@@ -275,6 +305,8 @@ def parse_affected_modules(text):
     """从增量 spec.md 解析「影响模块：」声明。返回模块 id 列表。"""
     for line in text.splitlines():
         s = line.strip()
+        if s.startswith("- ") or s.startswith("* "):
+            s = s[2:].strip()
         if s.startswith("影响模块："):
             val = s.split("：", 1)[1].strip()
             return [m.strip() for m in val.replace("，", ",").split(",") if m.strip()]
@@ -498,6 +530,43 @@ def plan_archive(root, change_name, require_confirmation=False):
         errors.append("phase 须为 archive，实际 {!r}".format(state.get("phase")))
     if state.get("verify_result") != "pass":
         errors.append("verify_result 须为 pass，实际 {!r}".format(state.get("verify_result")))
+    review_loop_id = state.get("review_loop_id")
+    review_loop_status = state.get("review_loop_status")
+    if review_loop_id is None and review_loop_status is not None:
+        errors.append("review_loop_status 非空但 review_loop_id 为空")
+    if review_loop_id is not None and review_loop_status is None:
+        errors.append("review_loop_id 非空但 review_loop_status 为空")
+    if review_loop_id is not None and review_loop_status == "passed":
+        try:
+            loop_state = read_loop_state(root, change_name)
+        except (FileNotFoundError, ValueError, OSError) as e:
+            errors.append("review_loop_status=passed 但审核循环状态不可读取：{}".format(e))
+        else:
+            binding_error = _review_binding_error(loop_state, state)
+            if binding_error:
+                errors.append(binding_error)
+            recorded_fingerprint = loop_state.get("source_fingerprint")
+            if not recorded_fingerprint:
+                errors.append("审核循环缺少源码指纹")
+            elif recorded_fingerprint != source_fingerprint(root, change_name):
+                errors.append("审核通过后的源码已变化")
+            unresolved = sorted(issue_id for issue_id, item in loop_state["issues"].items()
+                                if item.get("status") != "resolved")
+            if unresolved:
+                errors.append("审核循环仍有未解决问题：{}".format(", ".join(unresolved)))
+            unreviewed = sorted(dispatch_id for dispatch_id, item in loop_state["dispatches"].items()
+                                if not item.get("reviewed"))
+            if unreviewed:
+                errors.append("审核循环仍有未完成派发：{}".format(", ".join(unreviewed)))
+    review_status = state.get("review_loop_status")
+    if review_status not in (None, "passed"):
+        errors.append("review_loop_status 须为 null 或 passed，实际 {!r}".format(review_status))
+    if review_status != "passed" and state.get("review_loop_dispatch_id") is not None:
+        errors.append("活动 review_loop_dispatch_id 不允许归档：{}".format(
+            state.get("review_loop_dispatch_id")))
+    if review_status == "passed" and state.get("review_loop_dispatch_id") is not None:
+        errors.append("passed review loop 不应保留活动 dispatch_id：{}".format(
+            state.get("review_loop_dispatch_id")))
     if state.get("archive_confirmation") != "confirmed":
         if require_confirmation:
             errors.append("archive_confirmation 须为 confirmed，实际 {!r}".format(

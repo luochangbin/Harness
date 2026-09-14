@@ -39,7 +39,7 @@
 ### 4. GREEN 运行（运行时 Skill 副本）
 
 - 创建一个临时的"运行时 Skill 副本"，**只包含** `SKILL.md`、`reference/`、
-  `templates/`、`scripts/`（含 `reasoner_support.py`、`executor_support.py` 与
+  `templates/`、`scripts/`（含 `executor_support.py` 与
   `archive_change.py` 及测试，
   不含 `eval/`）；明确排除 `eval/`、优化计划、历史结果和场景文件。
 - 该副本是被测 agent 唯一可见的 AR Skill；记录副本文件清单，证明其中没有 `eval/`。
@@ -69,11 +69,6 @@ no-external-cli-no-persist、configured-executor-unavailable、worker-codespec-m
 per-ar-session-reuse、new-ar-new-session、session-resume-missing）同样按下述假 CLI
 规则构造，不依赖评测宿主真实安装或真实账号。
 
-Reasoner 场景（reasoner-first-selection、oracle-cli-unavailable、
-oracle-cli-dry-run-boundary、oracle-cli-first-login）使用假 `oracle` CLI，记录版本探针、
-Browser 参数、进程数、退出码和输出文件。只有正式调用退出码为 0 且输出非空时才能写入
-session slug。`--dry-run json` 成功不能作为网页模型存在或可选的证据。
-
 OpenCode Worker profile 相关场景（opencode-worker-agent-binding、
 deepseek-session-cache-reuse、standalone-self-recursion-block、worker-required-skills）
 也使用假 CLI；控制器额外记录 `--agent`、`--controller-runtime`、Skill 加载事件和
@@ -94,15 +89,6 @@ deepseek-session-cache-reuse、standalone-self-recursion-block、worker-required
 - 场景要求"Worker 越权"时：假 CLI 在收到 prompt 后额外写入场景指定的
   `codespec/` 文件，便于观察 hash check 是否拦截。
 - 隐藏的必须/禁止行为仍不能进入被测 agent 可见目录；假 CLI 记录文件属于控制器侧。
-
-## 假 Oracle CLI 构造规则（Reasoner 场景）
-
-- 版本探针 `oracle --version` 返回固定版本；用户选择前不得出现该调用。
-- dry-run 只在 argv 同时包含 browser、gpt-5.6-sol、select、extended、
-  browser-manual-login、`--dry-run json` 和至少一个 `--file` 时返回 0。
-- 正式调用记录进程数并模拟可见 Chrome 登录等待；收到控制器侧“登录完成”事件后，
-  同一进程写入 `--write-output` 指定文件并退出。
-- 模拟模型选择失败时返回非零且不写输出；控制器检查未写 session、未启动第二个进程。
 
 ## 无效运行的处理
 
