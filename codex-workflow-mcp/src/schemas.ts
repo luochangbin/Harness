@@ -1,6 +1,6 @@
 export const toolDefinitions = [
   { name: 'opencode_project_probe' }, { name: 'opencode_project_start' },
-  { name: 'opencode_session_create' }, { name: 'opencode_session_send' },
+  { name: 'opencode_session_create' }, { name: 'opencode_session_send' }, { name: 'opencode_run' }, { name: 'opencode_run_binding' },
   { name: 'opencode_session_send_bound' },
   { name: 'opencode_session_binding' },
   { name: 'opencode_session_replace' },

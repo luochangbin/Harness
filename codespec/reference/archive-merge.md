@@ -6,7 +6,7 @@
 - 变更状态：changes/<变更目录名>/.codespec.yaml；phase: archive、verify_result: pass。
 - spec.md 非空且声明影响模块；ADDED 不能重名，MODIFIED 必须恰好匹配一次。不能通过省略旧块表达删除。
 - full 或 design_required: true（含字段缺失）必须有非空、合法的 Design delta。
-- tweak 明确 design_required: false 才能没有 design.md；若同时存在 design.md，预检拒绝。脚本不会静默丢弃它。
+- `design_required: false` 不被支持；full 归档必须保留非空、合法的 design.md。
 - tasks.md 必须含至少一个任务、所有任务已勾选；「验证记录」有结论: PASS，表格每行有命令/证据、成功退出码 0（人工审查 N/A）和 PASS。失败、未验证或占位记录拒绝归档。证据真实性由执行与审查负责，脚本只验格式。
 - proposal.md、verification.md 不再是输入；旧项目需先按 legacy-migration.md 合并内容。
 - 目标归档目录不可已存在。已记录的 SPEC/DESIGN baseline hash 必须匹配；正常工作流在 design 退出前捕获基线，不清空 hash 来绕过冲突。

@@ -2,27 +2,27 @@
 
 Harness 是一组面向 AI 编程的规范驱动工作流。目前仓库包含两个版本：
 
-- **codespec**：面向 Vibe Coding 的轻量、自包含规格驱动开发（SDD）工作流。
-- **codex-workflow**：面向 ChatGPT 桌面版 Codex 的增强工作流，Design 由当前 Codex 完成，执行方式提供当前 Agent、原生 subagent、OpenCode 三选一，可选启用「审核-修复自动循环」。
+- **codespec**：面向 OpenCode/Claude 的规格驱动开发（SDD）工作流，默认提供轻量会话内闭环。
+- **codex-workflow**：面向 ChatGPT 桌面版 Codex 的增强工作流，Design 由当前 Codex 完成，Build 仅提供当前 Agent 和 OpenCode，可选启用「审核-修复自动循环」。
 
-两者都以“先明确需求和验收标准，再设计、实现、验证、归档”为核心，但复杂度和适用场景不同。
+两者都重视明确需求和验收标准；codespec 的普通档面向简单需求，full 使用完整的规格、设计、任务和归档流程。
 
 ## codespec
 
-codespec 是一套轻量的规格驱动开发（SDD）工作流：先用规格明确行为、边界和验收场景，再完成设计、实现与验证。TDD 作为实现保障按变更风险分级使用，而不是让所有任务都执行同样重量的流程。
+codespec 是规格驱动开发（SDD）工作流，面向 OpenCode/Claude。默认在当前会话内明确目标、边界和验收条件，读取已有实现后直接完成必要的实现与验证；不把普通请求自动升级为完整治理流程。
 
-### 三种档位
+### 两种档位
 
-- `full`：完整 SDD。适用于新功能、跨模块改造或高风险变更，生成需求、设计和任务文档；Build 只按设计声明的实施 Phase 分批，每个 Phase 内按任务执行 TDD。
-- `tweak`：轻量 SDD。适用于边界清晰的局部调整，保留需求和任务文档，仅在需要时补充设计；必须执行相关测试，但不强制每项任务先 RED。
-- `bugfix`：最小 TDD。适用于不新增能力、不改变接口的纯缺陷，不创建工作流文档；执行“根因分析 → RED → 最小修复 → GREEN → 回归验证”闭环。
+- 普通档：调用 `/codespec <需求>`。适用于新项目、简单需求、bug 和小范围实现；项目初始化状态、新能力或跨文件变更不会自动升级为 `full`。会话内明确目标、非目标、影响边界和验收条件，先读已有实现，只有关键缺口才询问，并可直接实现。不生成 spec/design/tasks/verification、规划、状态或归档文件，不初始化 codespec；产品文档仍可按需求修改。bug 采用最小 RED → GREEN → 回归验证闭环。
+- `full`：调用 `/codespec full <需求>`，或明确要求完整规格治理时使用的完整 SDD。生成并维护 spec、design、tasks、状态和验证归档，按阶段实现、验证并归档；仅恢复有效 full 变更。
+
 
 ### 使用方式
 
 ```text
 /codespec full 实现企业单点登录
-/codespec tweak 为用户列表增加状态筛选
-/codespec bugfix 修复并发更新导致的数据覆盖
+/codespec 为用户列表增加状态筛选
+/codespec 修复并发更新导致的数据覆盖
 ```
 
 ### 文档结构
@@ -37,35 +37,36 @@ codespec/
     └── codespec-001-example/
         ├── .codespec.yaml
         ├── spec.md
-        ├── design.md      # full 或确有设计需要时生成
+        ├── design.md
         └── tasks.md
 ```
 
-以上变更目录用于 `full` 和 `tweak`；`bugfix` 直接进入最小 TDD 路径，不创建 CodeSpec 变更目录。
+以上变更目录仅用于显式 `full`；普通档不创建 CodeSpec 变更目录或状态文件。
 
 
 ## codex-workflow
 
-codex-workflow 在规范治理之上增加了角色分工和执行器编排：控制 Agent 负责需求、设计决策、状态推进、独立验证与归档；Executor 只负责代码和测试实现。
+codex-workflow 在完整规范治理之外提供会话内普通实现：控制 Agent 负责需求边界、Executor 决策和独立验收；Executor 负责代码与测试实现。
 
 ### 执行流程
 
 ```mermaid
 flowchart TB
-    START(["触发 $codex-workflow<br/>档位 + 需求"]) --> MODE{"选择档位"}
+    START(["触发 $codex-workflow<br/>需求"]) --> MODE{"入口"}
 
-    MODE -->|full / tweak| OPEN["Open<br/>明确范围，生成 spec.md"]
+    MODE -->|full| OPEN["Open<br/>明确范围，生成 spec.md"]
     OPEN --> DESIGN["Design<br/>当前 Agent 完成设计推理<br/>生成 design.md、tasks.md"]
     DESIGN --> AUTH{"已授权进入 Build？"}
     AUTH -->|否| READY["保持 Build Ready<br/>等待用户确认"]
     AUTH -->|是| BUILD
 
-    MODE -->|bugfix| BUG["Bugfix<br/>定位根因，建立失败用例（RED）"]
-    BUG --> BUILD["Build<br/>当前 / subagent / opencode<br/>委派时每个 AR 使用独立 Session"]
+    MODE -->|普通| ORDINARY["会话规格<br/>目标、边界、验收"]
+    ORDINARY --> BUILD["Build<br/>current / opencode<br/>选择或复用同一 Session"]
 
     BUILD --> VERIFY["Verify<br/>控制 Agent 检查 diff<br/>并独立重跑验证"]
     VERIFY -->|未通过，返修| BUILD
-    VERIFY -->|通过| DRYRUN["Archive dry-run<br/>检查规范合并与归档结果"]
+    VERIFY -->|普通：通过| DONE(["交付结果"])
+    VERIFY -->|Full：通过| DRYRUN["Archive dry-run<br/>检查规范合并与归档结果"]
     DRYRUN --> CONFIRM{"确认归档？"}
     CONFIRM -->|否| PENDING["保留待归档状态"]
     CONFIRM -->|是| ARCHIVE(["合并 SPEC / DESIGN<br/>归档 AR"])
@@ -74,26 +75,26 @@ flowchart TB
 ### 关键设计
 
 - **控制权不外包**：设计与决策由当前控制 Agent 完成；外部 Executor 只负责实现，最终结果由控制 Agent 重新检查和验证。
-- **首次确认后复用默认值**：项目第一次进入 Build 时确认执行器，随后保存为项目默认配置，不在每次变更中重复询问。
-- **每个 AR 一个 Session**：同一 AR 的实现和返修复用一个执行器会话，提高上下文与缓存命中率；不同 AR 相互隔离，避免旧任务污染。subagent 使用原生完成通知；新 AR 的 OpenCode 使用插件内置 MCP Broker 管理项目级 Server，以 SSE 唤醒并用权威状态复核；旧 AR 或显式兼容配置仍可使用 CLI，有界等待规则保持不变。
+- **Executor 选择与复用**：普通入口没有配置时必须询问；已有普通 session 复用原 Executor、agent 和 session。Full 按 AR 绑定执行器和 session。
+- **独立验收**：Worker 完成或 Server 接收只表示执行状态，控制 Agent 仍检查真实 diff 并独立重跑测试。
 - **不静默降级**：Executor 不可用时明确停止并报告，不擅自切换模型或执行路径。
-- **归档前确认**：先运行 dry-run 和一致性检查，只有用户确认后才更新主规范并归档。
+- **Full 归档前确认**：先运行 dry-run 和一致性检查，只有用户确认后才更新主规范并归档。
 
 ### 使用方式
 
 ```text
+$codex-workflow 实现用户列表状态筛选
+$codex-workflow 修复支付回调重复入账
 $codex-workflow full 实现多租户权限体系
-$codex-workflow tweak 调整订单审批规则
-$codex-workflow bugfix 修复支付回调重复入账
 ```
 
-首次使用时，工作流会根据当前阶段完成必要确认；后续可恢复活跃 AR，继续设计、Build、修复或归档。
+普通入口不创建或恢复 AR，不写 spec/design/tasks/verification；需求中的新项目或跨文件实现也不会自动升级为 full。只有显式 full 才进入 AR 初始化、恢复、完整 Verify 和归档。
 
 
 
 ### OpenCode Server 插件架构
 
-安装构建产物 `dist/codex-workflow-plugin` 后，Codex 同时获得 `codex-workflow` Skill 和本地 STDIO MCP Broker。Broker 按项目根目录启动独立的 OpenCode Server，并按 AR 创建独立 Session：
+安装构建产物 `dist/codex-workflow-plugin` 后，Codex 同时获得 `codex-workflow` Skill 和本地 STDIO MCP Broker。Broker 按项目根目录启动独立的 OpenCode Server：Full 按 AR 创建独立 Session，普通入口通过 `opencode_run` 按 `ordinary:<runKey>` 管理 session，不创建或依赖 AR：
 
 ```text
 Codex 控制 Agent → MCP Broker → 项目级 OpenCode Server → AR Session
@@ -114,17 +115,7 @@ node scripts/build-codex-workflow-plugin.mjs
 `opencode_session_send_bound` 只表示任务已接受；控制 Agent 通过 `opencode_session_wait` 等待状态变化，超时不是成功。Session 完成后仍必须执行 codespec 越权检查、真实 diff 检查和独立测试，MCP 返回文本不能替代验收。
 
 
-Server Build 在建立 AR 绑定并完成 Git 前置后创建 codespec snapshot；发送任务使用 `opencode_session_send_bound`，传入 Phase ID、prompt 和已知 revision，由 Broker 解析 Session 并计算完整任务批次，避免控制 Agent 手写 Session ID 或拆分 Phase。控制 Agent 只负责独立 diff、测试和状态验收，外部 Worker 负责产品源码与测试实现。
-
-### 后续计划：接入网页版 ChatGPT 5.6 Sol
-
-后续计划将网页版 ChatGPT 5.6 Sol 作为可选的外部设计与代码审核顾问，加入 Design 和 Verify 阶段：
-
-- **Design**：将需求、项目约束和当前规范快照发送给 Sol，获取架构方案、风险提示和设计挑战意见；控制 Agent 整理并确认后，才写入 `design.md` 和 `tasks.md`。
-- **Verify**：每个 Phase 完成后生成代码 diff、测试结果和验收上下文，发送给 Sol 做独立代码审核；审核意见落盘为 review 记录，由控制 Agent 判断是否返修、跳过或进入下一阶段。
-- **边界**：Sol 只提供建议，不直接修改代码、规范或执行器状态；所有发送动作需要用户明确授权，凭据和浏览器会话留在宿主环境，不写入仓库。
-
-实现上计划通过独立的 ChatGPT Web 适配层完成浏览器会话、模型选择、上下文发送和结果回收，Skill 负责定义调用时机与输入输出契约，MCP Broker 继续只负责 OpenCode 执行和状态交接，不把网页版 ChatGPT相关流程打包进 MCP。
+Full Server Build 在建立 AR 绑定并完成 Git 前置后创建 codespec snapshot；发送任务使用 `opencode_session_send_bound`，传入 Phase ID、prompt 和权威 revision，由 Broker 解析 Session 并计算完整任务批次，避免控制 Agent 手写 Session ID 或拆分 Phase。普通 Server 使用 `opencode_run` 和 `ordinary:<runKey>`，不依赖 AR；控制 Agent 依据 Broker binding/status/revision 恢复或派发，并负责独立 diff、测试和状态验收，外部 Worker 负责产品源码与测试实现。
 
 ### 安装到 ChatGPT 桌面版
 
@@ -143,8 +134,7 @@ node scripts/build-codex-workflow-plugin.mjs
 
 ### codex-workflow
 
-- 当前版本依赖 Superpowers 的 TDD、系统化调试和完成前验证能力，所以执行器agent需要安装superpower技能。
-- 可选「审核-修复自动循环」仅适用于 full/tweak AR 且绑定 OpenCode Server 的场景；整体无轮数上限，同一问题完成三次修复仍未解决则暂缓并集中反馈，不自动提交、推送或归档。
-- 执行器选择优先显示按钮，不可用时回复序号：`1 当前`、`2 subagent`、`3 opencode`。subagent 需要宿主原生子代理能力，模型沿用宿主配置；OpenCode 仅在选用时需要安装。旧 Claude Code 默认值与会话保留兼容，但不出现在新菜单。
+- 普通和 full 的 Build 都支持 `current`、`opencode`；无配置时询问，已绑定 session 的修复继续使用原 Executor。
+- 审核-修复自动循环只适用于显式 full 且绑定 OpenCode Server 的 AR；需要本次明确授权，不自动提交、推送或归档。
 
 工作流中的权限限制和路径检查主要用于防止误操作，不应被视为安全沙箱。生产项目仍应使用最小权限、分支保护、CI、代码审查和密钥扫描等工程控制。

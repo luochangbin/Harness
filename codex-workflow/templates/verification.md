@@ -21,17 +21,6 @@
 - 实际监听/宿主：<service 实测 host:port；其他类型写 N/A>
 - 回复前运行状态：running / stopped（library/document 写 N/A）
 
-## Visual Evidence（仅可见界面需要）
-
-- 是否需要视觉验证：yes / no（仅当需求、Delivery Contract 或变更范围涉及可见界面时填 yes）
-- 实际查看工具与截图路径：<真实图像查看工具和文件路径；截图存在、Base64、DOM 或功能 smoke 不能替代>
-- 真实图像查看结果：PASS / NOT_VERIFIED / N/A
-- 若 Computer Use 因宿主隔离错误失败：记录错误码；同一基础设施错误不重复重试，功能 fallback 不能写成视觉 PASS
-
-<!-- visual-gate-state:start -->
-{"blocked": false, "fallback": {"error_code": null, "started": false}, "primary": {"error_code": null, "started": false}}
-<!-- visual-gate-state:end -->
-
 ## 结论
 PASS / FAIL
 

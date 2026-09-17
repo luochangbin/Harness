@@ -2,7 +2,7 @@
 language: zh-CN
 
 # Build Executor 初始为 ask；首次 Build 先选候选，再定向探测
-# 新选择：ask | current | subagent | opencode；旧 claude 配置仍兼容
+# Executor 选择：ask | current | opencode
 default_executor: ask
 
 # OpenCode transport for new ARs: server uses the bundled MCP Broker; null keeps legacy CLI behavior.

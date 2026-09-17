@@ -3,18 +3,24 @@ import path from 'node:path';
 import { BrokerError } from './errors.js';
 import { waitForEvent, ServerEvent } from './event-stream.js';
 import { OpenCodeClient, OpenCodeStatus, SessionInfo, messageId } from './opencode-client.js';
-import { PermissionBridge, PermissionResponse } from './permissions.js';
+import { PermissionBridge, PermissionResponse, automaticPermissionResponse } from './permissions.js';
 import { RuntimeRecord, SessionStateRecord, SessionStateStore } from './runtime-store.js';
 import { SessionFileLock } from './project-lock.js';
 import { PhaseBatchMode, resolvePhaseBatch } from './phase-batch.js';
-import { buildBoundWorkerPrompt } from './worker-prompt.js';
+import { buildBoundWorkerPrompt, buildOrdinaryWorkerPrompt } from './worker-prompt.js';
 
 const terminal = new Set<OpenCodeStatus>(['completed', 'failed', 'interrupted']);
 const active = new Set(['sending', 'ready', 'running', 'awaiting_permission']);
 const changePattern = /^[A-Za-z0-9_-]{1,256}$/;
+const ordinaryRunKeyPattern = /^ordinary:([A-Za-z0-9_.-]{1,256})$/;
+const ordinaryChangePattern = /^[A-Za-z0-9_.-]{1,256}$/;
+
+export type SessionNamespace = 'ar' | 'ordinary';
 
 export type SessionCreateOptions = {
   change: string;
+  namespace?: SessionNamespace;
+  runKey?: string;
   agent: string;
   access: 'read-only' | 'workspace-write';
   title?: string;
@@ -85,7 +91,9 @@ export class SessionManager {
     return base + ' [cw:' + requestId + ']';
   }
   async create(runtime: RuntimeRecord, options: SessionCreateOptions) {
-    if (!changePattern.test(options.change)) {
+    const namespace = options.namespace ?? 'ar';
+    const validChange = namespace === 'ordinary' ? ordinaryChangePattern : changePattern;
+    if (!validChange.test(options.change)) {
       throw new BrokerError('INVALID_CHANGE', 'Invalid AR change name');
     }
     return await this.withSessionLock(
@@ -96,15 +104,20 @@ export class SessionManager {
   }
 
   private async createUnlocked(runtime: RuntimeRecord, options: SessionCreateOptions) {
-    if (!changePattern.test(options.change)) throw new BrokerError('INVALID_CHANGE', 'Invalid AR change name');
+    const namespace = options.namespace ?? 'ar';
+    const validChange = namespace === 'ordinary' ? ordinaryChangePattern : changePattern;
+    if (!validChange.test(options.change)) throw new BrokerError('INVALID_CHANGE', 'Invalid Session name');
     if (!options.agent || !/^[A-Za-z0-9_.-]{1,128}$/.test(options.agent)) {
       throw new BrokerError('INVALID_AGENT', 'Invalid OpenCode agent');
     }
-    const existing = await this.store.findByChange(runtime.root, options.change);
+    if (namespace === 'ordinary' && (!options.runKey || options.runKey !== 'ordinary:' + options.change || !ordinaryRunKeyPattern.test(options.runKey))) {
+      throw new BrokerError('INVALID_RUN_KEY', 'Ordinary Session requires runKey ordinary:<suffix>');
+    }
+    const existing = await this.store.findByChange(runtime.root, options.change, namespace);
     if (existing) {
       if (existing.agent === options.agent && existing.access === options.access) {
         this.sessions.set(existing.sessionId, existing);
-        await this.store.removeCreation(runtime.root, options.change).catch(() => undefined);
+        await this.store.removeCreation(runtime.root, options.change, namespace).catch(() => undefined);
         return {
           sessionId: existing.sessionId, change: existing.change,
           agent: existing.agent, access: existing.access,
@@ -119,10 +132,10 @@ export class SessionManager {
       }
     }
 
-    let intent = await this.store.readCreation(runtime.root, options.change);
+    let intent = await this.store.readCreation(runtime.root, options.change, namespace);
     const recovering = intent !== null;
     if (intent) {
-      if (intent.agent !== options.agent || intent.access !== options.access) {
+      if ((intent.namespace ?? 'ar') !== namespace || intent.agent !== options.agent || intent.access !== options.access) {
         throw new BrokerError(
           'SESSION_CREATE_CONFLICT',
           'Persisted Session creation intent uses a different agent or access mode'
@@ -135,6 +148,8 @@ export class SessionManager {
         projectKey: runtime.projectKey,
         root: runtime.root,
         change: options.change,
+        namespace,
+        ...(options.runKey ? { runKey: options.runKey } : {}),
         requestId,
         title: this.markedTitle(options, requestId),
         agent: options.agent,
@@ -152,6 +167,8 @@ export class SessionManager {
     }
     const state: SessionStateRecord = {
       schemaVersion: 1,
+      namespace,
+      ...(options.runKey ? { runKey: options.runKey } : {}),
       projectKey: runtime.projectKey,
       root: runtime.root,
       sessionId: id,
@@ -165,7 +182,7 @@ export class SessionManager {
     await this.store.write(runtime.root, state);
     let cleanupPending = false;
     try {
-      await this.store.removeCreation(runtime.root, options.change);
+      await this.store.removeCreation(runtime.root, options.change, namespace);
     } catch {
       cleanupPending = true;
     }
@@ -281,8 +298,8 @@ export class SessionManager {
       };
     });
   }
-  async binding(runtime: RuntimeRecord, change: string) {
-    return await this.store.findByChange(runtime.root, change);
+  async binding(runtime: RuntimeRecord, change: string, namespace: SessionNamespace = 'ar') {
+    return await this.store.findByChange(runtime.root, change, namespace);
   }
 
   async sendBound(runtime: RuntimeRecord, change: string, phaseId: string, prompt: string, expectedRevision: number, batchMode: PhaseBatchMode = 'implementation', codespecSnapshotPath: string, workspaceSnapshotPath: string) {
@@ -294,6 +311,19 @@ export class SessionManager {
     const batch = await resolvePhaseBatch(runtime.root, change, phaseId, batchMode);
     const boundPrompt = buildBoundWorkerPrompt(change, batch.phaseId, batch.taskBatch, prompt, batchMode);
     return await this.send(runtime, state.sessionId, change, batch.taskBatch, boundPrompt, expectedRevision, codespecSnapshotPath, workspaceSnapshotPath);
+  }
+
+  async sendOrdinary(runtime: RuntimeRecord, sessionId: string, runKey: string, taskBatch: string, prompt: string, expectedRevision: number, codespecSnapshotPath: string, workspaceSnapshotPath: string) {
+    const match = ordinaryRunKeyPattern.exec(runKey);
+    if (!match) throw new BrokerError('INVALID_RUN_KEY', 'Ordinary runKey must be ordinary:<suffix>');
+    const suffix = match[1];
+    if (!codespecSnapshotPath || !workspaceSnapshotPath) {
+      throw new BrokerError('INVALID_SNAPSHOT_PATH', 'Ordinary sends require both snapshot paths');
+    }
+    const state = await this.store.findByChange(runtime.root, suffix, 'ordinary');
+    if (!state || state.sessionId !== sessionId) throw new BrokerError('SESSION_NOT_FOUND', 'Ordinary Session not found');
+    const ordinaryPrompt = buildOrdinaryWorkerPrompt(runKey, taskBatch, prompt);
+    return await this.send(runtime, sessionId, suffix, taskBatch, ordinaryPrompt, expectedRevision, codespecSnapshotPath, workspaceSnapshotPath, 'ordinary');
   }
 
   async hasActiveSessions(root: string) {
@@ -309,7 +339,7 @@ export class SessionManager {
     return active.has((await this.require(runtime, sessionId)).status);
   }
 
-  async send(runtime: RuntimeRecord, sessionId: string, change: string, taskBatch: string, prompt: string, expectedRevision: number, codespecSnapshotPath?: string, workspaceSnapshotPath?: string) {
+  async send(runtime: RuntimeRecord, sessionId: string, change: string, taskBatch: string, prompt: string, expectedRevision: number, codespecSnapshotPath?: string, workspaceSnapshotPath?: string, namespace: SessionNamespace = 'ar') {
     return await this.withSessionLock(runtime, sessionId, async () => {
       let state = await this.require(runtime, sessionId);
       if (state.status === 'sending') {
@@ -318,7 +348,7 @@ export class SessionManager {
           throw new BrokerError('SEND_UNCERTAIN', 'Previous send outcome is not confirmed; refusing to resend');
         }
       }
-      if (state.change !== change) throw new BrokerError('PROJECT_SESSION_MISMATCH', 'Session is bound to another AR');
+      if (state.change !== change || (state.namespace ?? 'ar') !== namespace) throw new BrokerError('PROJECT_SESSION_MISMATCH', 'Session is bound to another namespace');
       if (state.revision !== expectedRevision) throw new BrokerError('REVISION_CONFLICT', 'Session revision has changed');
       if (state.status === 'running' || state.status === 'awaiting_permission' || state.status === 'sending') {
         throw new BrokerError('SESSION_BUSY', 'Session already has an active message');
@@ -460,7 +490,10 @@ export class SessionManager {
           continue;
         }
         reconnects = 0;
-        if (state.status === 'awaiting_permission' || terminal.has(state.status as OpenCodeStatus)) return this.snapshot(state, true);
+        if (state.status === 'awaiting_permission') {
+          state = await this.autoApprovePermission(runtime, sessionId);
+        }
+         if (state.status === 'awaiting_permission' || terminal.has(state.status as OpenCodeStatus)) return this.snapshot(state, true);
         const updated = await this.withSessionLock(runtime, sessionId, async () => {
           state = await this.require(runtime, sessionId);
           if (terminal.has(state.status as OpenCodeStatus)) return { changed: state.revision > afterRevision, info: { id: sessionId, status: state.status } as SessionInfo };
@@ -720,12 +753,35 @@ export class SessionManager {
   }
 
   private async reconcileSessionPermissions(runtime: RuntimeRecord, sessionId: string): Promise<void> {
+    await this.autoApprovePermission(runtime, sessionId);
     const permissionState = await this.reconcilePermissions(runtime, sessionId);
     if (permissionState.supported && permissionState.pending.length) {
       await this.applyPendingPermissions(runtime, sessionId, permissionState.pending, permissionState.expectedRevision, permissionState.expectedInteractionId);
     }
   }
 
+  private async autoApprovePermissionUnlocked(runtime: RuntimeRecord, state: SessionStateRecord) {
+    if (state.status !== 'awaiting_permission' || !state.interaction || !this.permissions) return state;
+    const interaction = state.interaction as any;
+    const id = typeof interaction.id === 'string' ? interaction.id : undefined;
+    const response = id ? automaticPermissionResponse(interaction) : null;
+    if (!id || !response) return state;
+    if (typeof (this.client as any).permission !== 'function') return state;
+    await this.client.permission(runtime, state.sessionId, id, response);
+    this.permissions.respond(runtime.projectKey, state.sessionId, id, response);
+    state.status = 'running';
+    state.interaction = null;
+    state.revision++;
+    state.updatedAt = new Date().toISOString();
+    await this.store.write(runtime.root, state);
+    return state;
+  }
+
+  private async autoApprovePermission(runtime: RuntimeRecord, sessionId: string) {
+    return await this.withSessionLock(runtime, sessionId, async () => {
+      return await this.autoApprovePermissionUnlocked(runtime, await this.require(runtime, sessionId));
+    });
+  }
   private async applyPendingPermissions(runtime: RuntimeRecord, sessionId: string, pending: any[], expectedRevision?: number, expectedInteractionId?: string | null) {
     return await this.withSessionLock(runtime, sessionId, async () => {
       const current = await this.require(runtime, sessionId);
@@ -745,7 +801,7 @@ export class SessionManager {
       current.revision++;
       current.updatedAt = new Date().toISOString();
       await this.store.write(runtime.root, current);
-      return current;
+      return await this.autoApprovePermissionUnlocked(runtime, current);
     });
   }
 
@@ -809,6 +865,9 @@ export class SessionManager {
       : undefined) ?? source?.always;
     const request = this.classifyScope(requestValues, runtime.root);
     const always = this.classifyScope(alwaysValues, runtime.root);
+    const operation = (typeof source?.tool === 'string' ? source.tool : source?.tool?.name) ??
+      (typeof permission === 'object' && permission ? permission.tool : undefined) ??
+      source?.metadata?.tool ?? source?.metadata?.operation ?? source?.operation;
     return {
       id: id === undefined || id === null ? undefined : String(id),
       request: {
@@ -817,6 +876,7 @@ export class SessionManager {
         sessionId,
         permission: String(type),
         type: String(type),
+        operation: operation === undefined || operation === null ? undefined : String(operation),
         target: request.targets.length ? request.targets.join(', ') : undefined,
         outside: request.outside,
         unknownScope: request.unknown,

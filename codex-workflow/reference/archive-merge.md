@@ -19,7 +19,7 @@ verify 通过（verify_result: pass）+ 用户确认一次（类型 C 必问点�
 - 模块标题到第一个块之间的说明、未提及的块一律原样保留（splice 合并，不从解析结果重建分节）
 - `## 质询记录`、`## 已知风险` 等 AR 历史内容只随 change 目录归档，不合并进全量 DESIGN
 - 归档前校验：SPEC/DESIGN 的 ADDED 名称必须在目标模块分节不存在、MODIFIED 名称必须恰好匹配一次；不支持通过“省略旧块”表达删除
-- `design.md` 必须存在且非空（full/tweak 的 design 阶段产物）；缺失、空白或仅含质询记录等无 Design delta 的内容 → 归档被拒绝，不得把缺失解释为“本次没有设计变更”
+- `design.md` 必须存在且非空（full 的 design 阶段产物）；缺失、空白或仅含质询记录等无 Design delta 的内容 → 归档被拒绝，不得把缺失解释为“本次没有设计变更”
 - 无结构整节设计（无 `## ADDED/MODIFIED Design Sections` 节头）→ 归档被拒绝，错误信息给出转换为具名块 delta 的示例
 
 **多模块支持**：增量 spec.md 声明多个影响模块时，每个 ADDED/MODIFIED 节头标注模块

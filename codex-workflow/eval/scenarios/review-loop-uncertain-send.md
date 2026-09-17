@@ -2,7 +2,7 @@
 
 ## 仓库状态
 
-已初始化 AR 仓库；`AR-041-review-reserve`（tier: tweak，phase: verify）绑定
+已初始化 AR 仓库；`AR-041-review-reserve`（tier: full，phase: verify）绑定
 `worker_executor: opencode`、`worker_transport: server`、`worker_session_id: ses_reserve`。
 用户已授权本次自动循环，R1 复现证据完整（open，attempts 0）。
 

@@ -45,37 +45,52 @@ class SimplifiedWorkflowTest(unittest.TestCase):
         self.assertFalse(plan['ok'])
         self.assertEqual(before, all_file_hashes(str(self.root)))
 
-    def test_tweak_without_design_archives_and_preserves_design_bytes(self):
-        self.optional_design()
-        master = self.root / 'codespec' / 'DESIGN.md'
-        master.write_bytes(master.read_bytes().replace(b'\r\n', b'\n').replace(b'\n', b'\r\n'))
-        before = master.read_bytes()
-        capture_baseline(str(self.root), self.name)
-        plan = plan_archive(str(self.root), self.name, require_confirmation=True)
-        self.assertTrue(plan['ok'], plan.get('errors'))
-        result = apply_archive(plan)
-        self.assertEqual(before, master.read_bytes())
-        archived = Path(result['archive_path'])
-        self.assertTrue((archived / '.codespec.yaml').exists())
-        self.assertEqual(EVIDENCE, (archived / 'tasks.md').read_text(encoding='utf-8'))
-        self.assertFalse((archived / '.ar.yaml').exists())
-        self.assertIn('找回密码', (self.root / 'codespec' / 'SPEC.md').read_text(encoding='utf-8'))
-        self.assertEqual(result['after_sha256']['design'], plan['design_hash'])
+    def test_legacy_tweak_state_is_rejected_without_writes(self):
+        self.state.write_text(self.state.read_text(encoding='utf-8').replace('tier: full', 'tier: tweak'), encoding='utf-8')
+        before = all_file_hashes(str(self.root))
+        plan = plan_archive(str(self.root), self.name)
+        self.assertFalse(plan['ok'])
+        self.assertIn('状态 tier 必须为 full', plan['errors'])
+        self.assertEqual(before, all_file_hashes(str(self.root)))
+
+    def test_legacy_bugfix_state_is_rejected_without_writes(self):
+        self.state.write_text(
+            self.state.read_text(encoding='utf-8').replace('tier: full', 'tier: bugfix'),
+            encoding='utf-8',
+        )
+        before = all_file_hashes(str(self.root))
+        plan = plan_archive(str(self.root), self.name)
+        self.assertFalse(plan['ok'])
+        self.assertIn('状态 tier 必须为 full', plan['errors'])
+        self.assertEqual(before, all_file_hashes(str(self.root)))
+
+    def test_capture_baseline_rejects_legacy_tier_without_writes(self):
+        self.state.write_text(self.state.read_text(encoding='utf-8').replace('tier: full', 'tier: tweak'), encoding='utf-8')
+        before = all_file_hashes(str(self.root))
+        with self.assertRaisesRegex(ValueError, '状态 tier 必须为 full'):
+            capture_baseline(str(self.root), self.name)
+        self.assertEqual(before, all_file_hashes(str(self.root)))
 
     def test_missing_design_without_opt_out_is_rejected(self):
-        self.optional_design()
-        self.state.write_text(self.state.read_text(encoding='utf-8').replace('design_required: false\n', ''), encoding='utf-8')
+        (self.change / 'design.md').unlink()
         self.assert_rejected_without_writes()
 
     def test_full_cannot_opt_out_of_design(self):
-        self.optional_design()
-        self.state.write_text(self.state.read_text(encoding='utf-8').replace('tier: tweak', 'tier: full'), encoding='utf-8')
-        self.assert_rejected_without_writes()
+        self.state.write_text(self.state.read_text(encoding='utf-8') + 'design_required: false\n', encoding='utf-8')
+        (self.change / 'design.md').unlink()
+        before = all_file_hashes(str(self.root))
+        plan = plan_archive(str(self.root), self.name)
+        self.assertFalse(plan['ok'])
+        self.assertIn('full 变更的 design_required 必须为 true', plan['errors'])
+        self.assertEqual(before, all_file_hashes(str(self.root)))
 
     def test_opt_out_does_not_silently_ignore_existing_design(self):
-        self.optional_design()
-        (self.change / 'design.md').write_text('Existing design must not be dropped', encoding='utf-8')
-        self.assert_rejected_without_writes()
+        self.state.write_text(self.state.read_text(encoding='utf-8') + 'design_required: false\n', encoding='utf-8')
+        before = all_file_hashes(str(self.root))
+        plan = plan_archive(str(self.root), self.name)
+        self.assertFalse(plan['ok'])
+        self.assertIn('full 变更的 design_required 必须为 true', plan['errors'])
+        self.assertEqual(before, all_file_hashes(str(self.root)))
 
     def test_tasks_are_required_even_when_state_says_pass(self):
         (self.change / 'tasks.md').unlink()
@@ -103,7 +118,6 @@ class SimplifiedWorkflowTest(unittest.TestCase):
         self.assertEqual({self.name: 'design'}, scan_active(str(self.root)))
 
     def test_cli_archives_the_new_format_without_removed_documents(self):
-        self.optional_design()
         script = str(Path(__file__).with_name('archive_change.py'))
         for action in ('--capture-baseline', '--dry-run', '--apply'):
             run = subprocess.run([sys.executable, script, '--root', str(self.root),
@@ -113,7 +127,7 @@ class SimplifiedWorkflowTest(unittest.TestCase):
             payload = json.loads(run.stdout)
             self.assertTrue(payload['ok'])
         archived = Path(payload['archive_path'])
-        self.assertEqual({'spec.md', 'tasks.md'}, {p.name for p in archived.glob('*.md')})
+        self.assertEqual({'spec.md', 'design.md', 'tasks.md'}, {p.name for p in archived.glob('*.md')})
         self.assertIn('archived: true', (archived / '.codespec.yaml').read_text(encoding='utf-8'))
 
     def test_mixed_state_formats_are_rejected(self):

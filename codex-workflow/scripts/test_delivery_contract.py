@@ -58,7 +58,6 @@ class DeliveryContractCheckTest(unittest.TestCase):
             - 交付访问入口：`{entry}`
             - 监听/宿主约束：`{listener}`
             - 交付运行模式：{mode}
-            - 视觉验收：n/a
             - 最小产物：单页应用
             - 用户可观察结果：页面可访问
             - 最低证据层级：浏览器冒烟
@@ -112,21 +111,6 @@ class DeliveryContractCheckTest(unittest.TestCase):
         )
         self.assert_rejected(result, payload, "DELIVERY_LISTENER_MISMATCH")
 
-    def test_required_visual_contract_cannot_omit_visual_evidence(self):
-        design = self.design() + _document("""
-            - 视觉验收：required
-        """)
-        result, payload = self.run_check(design, self.verification())
-        self.assert_rejected(result, payload, "MISSING_VISUAL_EVIDENCE")
-    def test_rejects_unverified_required_visual_evidence(self):
-        verification = self.verification() + _document("""
-            ## Visual Evidence（仅可见界面需要）
-            - 是否需要视觉验证：yes
-            - 实际查看工具与截图路径：N/A
-            - 真实图像查看结果：NOT_VERIFIED
-        """)
-        result, payload = self.run_check(self.design(), verification)
-        self.assert_rejected(result, payload, "VISUAL_NOT_VERIFIED")
     def test_keep_running_requires_live_process_before_handoff(self):
         result, payload = self.run_check(
             self.design(mode="keep-running"),
@@ -160,29 +144,10 @@ class DeliveryContractCheckTest(unittest.TestCase):
         )
 
 
-    def test_runnable_delivery_must_declare_visual_contract(self):
-        design = self.design().replace("- 视觉验收：n/a", "")
-        result, payload = self.run_check(design, self.verification())
-        self.assert_rejected(result, payload, "MISSING_VISUAL_CONTRACT")
-
-    def test_required_visual_evidence_rejects_na_screenshot_path(self):
-        design = self.design() + _document("""
-            - 视觉验收：required
-        """)
-        verification = self.verification() + _document("""
-            ## Visual Evidence（仅可见界面需要）
-            - 是否需要视觉验证：yes
-            - 实际查看工具与截图路径：N/A
-            - 真实图像查看结果：PASS
-        """)
-        result, payload = self.run_check(design, verification)
-        self.assert_rejected(result, payload, "MISSING_VISUAL_EVIDENCE")
-
-    def test_desktop_app_requires_visual_contract(self):
-        design = self.design().replace("- 交付类型：service", "- 交付类型：desktop-app")
-        result, payload = self.run_check(design, self.verification())
-        self.assert_rejected(result, payload, "VISUAL_CONTRACT_REQUIRED")
-
+    def test_runnable_delivery_does_not_require_optional_contract_field(self):
+        result, payload = self.run_check(self.design(), self.verification())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(payload["ok"])
 
 if __name__ == "__main__":
     unittest.main()

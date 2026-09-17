@@ -19,6 +19,17 @@ function fixedWorkerInstructions(change: string, mode: WorkerBatchMode) {
 
 export type WorkerBatchMode = 'implementation' | 'repair';
 
+export function buildOrdinaryWorkerPrompt(runKey: string, taskBatch: string, prompt: string) {
+  return [
+    'Ordinary OpenCode run: ' + runKey,
+    'Task batch: ' + taskBatch,
+    'This is not an AR and must not read or modify codespec/.',
+    'Use the existing project safety, permission and verification boundaries.',
+    '',
+    prompt.trim()
+  ].join('\n');
+}
+
 export function buildBoundWorkerPrompt(
   change: string,
   phaseId: string,

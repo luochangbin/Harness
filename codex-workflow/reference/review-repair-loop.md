@@ -7,12 +7,12 @@
 
 启用条件（全部满足）：
 
-- 已有 full/tweak AR，`phase` 为 `build` 或 `verify`；
+- 已有 full AR，`phase` 为 `build` 或 `verify`；
 - AR 执行器绑定为 `opencode` 且 `worker_transport: server`；
 - 用户在本次明确授权自动审核修复（如「审核并交给 OpenCode 修复，再复审」）。
 
-不适用时：解释限制并等待用户决定；不得静默换执行器或传输。不纳入 bugfix 无 AR、临时伪造
-AR、复用其他 AR 的 Session、current/subagent/legacy CLI 自动循环。
+不适用时：解释限制并等待用户决定；不得静默换执行器或传输。不纳入普通无 AR 请求、临时伪造
+AR、复用其他 AR 的 Session、current/legacy CLI 自动循环。
 
 「审核代码 / 再次审核 / 分析是否有问题」是只读审核，不启动修复、不写循环授权。仅安装插件、
 选择 OpenCode 或过去同意 Build 都不构成新一轮无限授权。
@@ -54,7 +54,7 @@ AR、复用其他 AR 的 Session、current/subagent/legacy CLI 自动循环。
 
 `.ar.yaml` 控制字段：`review_loop_id / status / issue_limit / round / dispatch_id /
 expected_revision`。`round` 是已预留派发次数（单调递增），不是审核次数、wait 次数或 MCP
-revision。旧 AR 缺字段视为未启用，不自动开启；非法计数、未知 status、循环绑定被更换均报错停止。
+revision。缺少循环字段视为未启用，不自动开启；非法计数、未知 status、循环绑定被更换均报错停止。
 
 操作（`python <skill 基目录>/scripts/review_loop_support.py <op> --root <仓库根> --change <AR>`）：
 

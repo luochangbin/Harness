@@ -6,7 +6,7 @@ test('tool contract exposes only high-level broker tools', () => {
   const names = toolDefinitions.map((tool) => tool.name);
   assert.deepEqual(names, [
     'opencode_project_probe', 'opencode_project_start',
-    'opencode_session_create', 'opencode_session_send',
+    'opencode_session_create', 'opencode_session_send', 'opencode_run', 'opencode_run_binding',
     'opencode_session_send_bound',
     'opencode_session_binding',
     'opencode_session_replace',

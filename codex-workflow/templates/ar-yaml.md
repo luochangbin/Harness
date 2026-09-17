@@ -1,10 +1,10 @@
 # .ar.yaml 状态文件模板 — 复制到 codespec/changes/<AR 目录>/ 下，文件名 .ar.yaml
 # 字段说明：
 #   ar                   AR 编号（目录名前缀，如 AR-001）
-#   tier                 档位：full | tweak（bugfix 不建 AR）
+#   tier                 档位：full
 #   phase                下一步可执行阶段：open | design | build | verify | archive；build 不表示实现已开始
 #   modules              影响模块 id 列表（必须登记在 codespec/.ar/config.yaml）
-#   worker_transport     null|server|cli|native；null 表示按 AR/项目默认值
+#   worker_transport     null|server|cli；null 表示 current 路径或按 AR/项目默认值
 #   verify_result        验证结果：pending | pass | fail
 #   verify_failures      连续验证失败次数（verify 失败回 build 时 +1；>=3 后暂停等用户）
 #   archive_confirmation 归档确认：pending | confirmed（dry-run 展示后用户确认一次置 confirmed）
@@ -16,9 +16,9 @@
 #   review_loop_round        已预留的修复派发次数（单调递增，不限制整体轮数）
 #   review_loop_dispatch_id  当前循环/轮次稳定标识，如 <loop-id>:2
 #   review_loop_expected_revision  派发前读取的真实 MCP revision
-#   worker_executor       本 AR Worker：null | subagent | opencode；旧 claude 兼容
-#   worker_agent          OpenCode agent ID 或原生角色名；未选角色或旧绑定为 null
-#   worker_session_id     CLI session id 或原生 Agent ID；current 路径为 null
+#   worker_executor       本 AR Worker：null | opencode；current 路径为 null
+#   worker_agent          OpenCode agent ID；未选角色或 current 路径为 null
+#   worker_session_id     OpenCode CLI/Server session id；current 路径为 null
 #   archived             归档完成置 true
 ar: AR-001
 tier: full

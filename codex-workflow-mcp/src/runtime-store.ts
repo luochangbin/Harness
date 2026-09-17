@@ -20,6 +20,8 @@ export type RuntimeRecord = {
 
 export type SessionCreationRecord = {
   schemaVersion: 1;
+  namespace?: 'ar' | 'ordinary';
+  runKey?: string;
   projectKey: string;
   root: string;
   change: string;
@@ -47,6 +49,8 @@ export type SessionReplacementRecord = {
 
 export type SessionStateRecord = {
   schemaVersion: 1;
+  namespace?: 'ar' | 'ordinary';
+  runKey?: string;
   projectKey: string;
   root: string;
   sessionId: string;
@@ -130,7 +134,9 @@ export class SessionStateStore {
     try {
       const value = JSON.parse(await fs.readFile(this.fileFor(root, sessionId), 'utf8')) as Partial<SessionStateRecord>;
       if (value.schemaVersion !== 1 || value.projectKey !== projectKey(root) ||
-          value.sessionId !== sessionId || typeof value.revision !== 'number') {
+          value.sessionId !== sessionId || typeof value.revision !== 'number' ||
+          (value.namespace !== undefined && !['ar', 'ordinary'].includes(value.namespace)) ||
+          (value.runKey !== undefined && typeof value.runKey !== 'string')) {
         corrupt('Session state is invalid');
       }
       return value as SessionStateRecord;
@@ -149,16 +155,18 @@ export class SessionStateStore {
     await fs.rm(this.fileFor(root, sessionId), { force: true });
   }
 
-  creationFileFor(root: string, change: string) {
-    if (!/^[A-Za-z0-9_-]{1,256}$/.test(change)) corrupt('Invalid AR change');
-    return path.join(this.baseDir, projectKey(root).slice('sha256:'.length), 'creations', change + '.json');
+  creationFileFor(root: string, change: string, namespace: 'ar' | 'ordinary' = 'ar') {
+    const pattern = namespace === 'ordinary' ? /^[A-Za-z0-9_.-]{1,256}$/ : /^[A-Za-z0-9_-]{1,256}$/;
+    if (!pattern.test(change)) corrupt('Invalid Session key');
+    return path.join(this.baseDir, projectKey(root).slice('sha256:'.length), 'creations', namespace, change + '.json');
   }
 
-  async readCreation(root: string, change: string): Promise<SessionCreationRecord | null> {
+  async readCreation(root: string, change: string, namespace: 'ar' | 'ordinary' = 'ar'): Promise<SessionCreationRecord | null> {
     try {
-      const value = JSON.parse(await fs.readFile(this.creationFileFor(root, change), 'utf8')) as Partial<SessionCreationRecord>;
+      const value = JSON.parse(await fs.readFile(this.creationFileFor(root, change, namespace), 'utf8')) as Partial<SessionCreationRecord>;
       if (value.schemaVersion !== 1 || value.projectKey !== projectKey(root) ||
           value.root !== canonicalRoot(root) || value.change !== change ||
+          (value.namespace ?? 'ar') !== namespace ||
           typeof value.requestId !== 'string' ||
           !/^[A-Za-z0-9_-]{16,128}$/.test(value.requestId) ||
           typeof value.title !== 'string' || !value.title.includes(value.requestId) ||
@@ -177,18 +185,21 @@ export class SessionStateStore {
 
   async writeCreation(root: string, record: SessionCreationRecord): Promise<void> {
     const normalized = canonicalRoot(root);
+    const namespace = record.namespace ?? 'ar';
+    const changePattern = namespace === 'ordinary' ? /^[A-Za-z0-9_.-]{1,256}$/ : /^[A-Za-z0-9_-]{1,256}$/;
     if (record.projectKey !== projectKey(normalized) || record.root !== normalized ||
-        record.change === '' || !/^[A-Za-z0-9_-]{1,256}$/.test(record.change) ||
+        record.change === '' || !changePattern.test(record.change) ||
         !/^[A-Za-z0-9_-]{16,128}$/.test(record.requestId) ||
         !record.title.includes(record.requestId) ||
-        !record.agent || !['read-only', 'workspace-write'].includes(record.access)) {
+        !record.agent || !['read-only', 'workspace-write'].includes(record.access) ||
+        (namespace === 'ordinary' && record.runKey !== 'ordinary:' + record.change)) {
       corrupt('Session creation identity is invalid');
     }
-    await atomicWrite(this.creationFileFor(normalized, record.change), { ...record, root: normalized });
+    await atomicWrite(this.creationFileFor(normalized, record.change, namespace), { ...record, namespace, root: normalized });
   }
 
-  async removeCreation(root: string, change: string) {
-    await fs.rm(this.creationFileFor(root, change), { force: true });
+  async removeCreation(root: string, change: string, namespace: 'ar' | 'ordinary' = 'ar') {
+    await fs.rm(this.creationFileFor(root, change, namespace), { force: true });
   }
   replacementFileFor(root: string, change: string) {
     if (!/^[A-Za-z0-9_-]{1,256}$/.test(change)) corrupt('Invalid AR change');
@@ -333,11 +344,11 @@ export class SessionStateStore {
     return states;
   }
 
-  async findByChange(root: string, change: string): Promise<SessionStateRecord | null> {
-    const recovered = await this.recoverReplacement(root, change);
-    if (recovered) return recovered;
+  async findByChange(root: string, change: string, namespace: 'ar' | 'ordinary' = 'ar'): Promise<SessionStateRecord | null> {
+    const recovered = namespace === 'ar' ? await this.recoverReplacement(root, change) : null;
+    if (recovered && (recovered.namespace ?? 'ar') === namespace) return recovered;
     const matches = (await this.list(root))
-      .filter(state => state.change === change)
+      .filter(state => state.change === change && (state.namespace ?? 'ar') === namespace)
       .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
     return matches.find(state => !['completed', 'failed', 'interrupted'].includes(state.status)) ?? matches[0] ?? null;
   }

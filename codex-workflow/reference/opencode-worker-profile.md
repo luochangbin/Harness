@@ -21,7 +21,7 @@
 
 - 新 OpenCode session 创建成功后，将执行器、agent ID、session ID 一起写入当前 AR 的 `.ar.yaml`。
 - 后续恢复始终使用绑定的 agent 和 session；项目配置改变不会静默迁移活动 AR。
-- 旧 AR 只有 `worker_executor` 和 `worker_session_id` 时按旧绑定继续，不补写 `worker_agent`。
+- OpenCode CLI transport 必须明确保存 `worker_executor`、`worker_transport` 和 `worker_session_id`；缺少必要绑定字段时停止，不猜测 agent。
 - 切换 agent 必须显式清除旧 session 后创建新绑定；不得在同一 session 中静默换模型配置。
 
 ## 独立使用 OpenCode

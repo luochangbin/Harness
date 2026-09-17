@@ -278,20 +278,58 @@ archived: false
         self.assertFalse(plan["ok"])
         self.assertTrue(any("绑定" in error for error in plan["errors"]))
 
-    def test_archive_accepts_subagent_native_binding(self):
+    def test_archive_accepts_opencode_server_binding(self):
         self._rewrite_state(u"ar: {}\n".format(self.change) + """tier: full
 phase: archive
 modules: [auth]
-worker_transport: native
-worker_executor: subagent
-worker_agent: native-role
-worker_session_id: native_123
+worker_transport: server
+worker_executor: opencode
+worker_agent: ar-worker
+worker_session_id: ses_test
 verify_result: pass
 archive_confirmation: confirmed
 archived: false
 """)
         plan = plan_archive(self.root, self.change)
         self.assertTrue(plan["ok"], plan.get("errors"))
+
+    def test_archive_rejects_unsupported_bindings_without_side_effects(self):
+        bindings = (
+            ("subagent", "native", "native-role", "native_123"),
+            ("claude", "cli", None, "6f0b1a2e-8c4d-4e5f-9a6b-7c8d9e0f1a2b"),
+            ("native", "native", "native-role", "native_123"),
+        )
+        for executor, transport, agent, session_id in bindings:
+            with self.subTest(executor=executor, transport=transport):
+                self._rewrite_state(u"""ar: {change}
+tier: full
+phase: archive
+modules: [auth]
+worker_transport: {transport}
+worker_executor: {executor}
+{agent_line}worker_session_id: {session_id}
+verify_result: pass
+archive_confirmation: confirmed
+archived: false
+""".format(
+                    change=self.change,
+                    transport=transport,
+                    executor=executor,
+                    agent_line=("worker_agent: {}\n".format(agent) if agent else ""),
+                    session_id=session_id,
+                ))
+                before = all_file_hashes(self.root)
+                plan = plan_archive(self.root, self.change)
+                self.assertFalse(plan["ok"])
+                self.assertTrue(any("状态文件解析失败" in error
+                                    for error in plan["errors"]), plan)
+                self.assertEqual(before, all_file_hashes(self.root))
+                with self.assertRaises(ValueError):
+                    capture_baseline(self.root, self.change)
+                self.assertEqual(before, all_file_hashes(self.root))
+                with self.assertRaises(ValueError):
+                    apply_archive(plan)
+                self.assertEqual(before, all_file_hashes(self.root))
 
     def test_archive_rejects_incompatible_executor_transport(self):
         self._rewrite_state(u"ar: {}\n".format(self.change) + """tier: full
@@ -307,7 +345,7 @@ archived: false
 """)
         plan = plan_archive(self.root, self.change)
         self.assertFalse(plan["ok"])
-        self.assertTrue(any("opencode" in error and "transport" in error
+        self.assertTrue(any("状态文件解析失败" in error and "worker_transport" in error
                             for error in plan["errors"]))
 
     def test_archive_rejects_source_changed_after_review_pass(self):
@@ -377,6 +415,19 @@ archived: false
         plan = plan_archive(self.root, self.change)
         self.assertFalse(plan["ok"])
         self.assertTrue(any("phase" in e for e in plan["errors"]), plan["errors"])
+        self.assertEqual(all_file_hashes(self.root), before)
+
+    def test_plan_rejects_legacy_tweak_tier_without_writing(self):
+        self._rewrite_state(u"ar: {}\n".format(self.change) + u'''tier: tweak
+phase: archive
+modules: [auth]
+verify_result: pass
+archive_confirmation: confirmed
+''')
+        before = all_file_hashes(self.root)
+        plan = plan_archive(self.root, self.change)
+        self.assertFalse(plan["ok"])
+        self.assertTrue(any("tier" in error for error in plan["errors"]))
         self.assertEqual(all_file_hashes(self.root), before)
 
     # ---- 测试 3：dry-run 不要求确认；apply 必须确认 ----
@@ -588,6 +639,19 @@ archived: false
         state = parse_state(os.path.join(self.change_dir(), ".ar.yaml"))
         self.assertEqual(state["spec_base_hash"], expected_spec)
         self.assertEqual(state["design_base_hash"], expected_design)
+
+    def test_capture_baseline_rejects_legacy_tier_without_writing(self):
+        self._rewrite_state(u"ar: {}\n".format(self.change) + u'''tier: tweak
+phase: design
+modules: [auth]
+verify_result: pending
+spec_base_hash: null
+design_base_hash: null
+''')
+        before = all_file_hashes(self.root)
+        with self.assertRaises(ValueError):
+            capture_baseline(self.root, self.change)
+        self.assertEqual(all_file_hashes(self.root), before)
 
     # ---- 测试 12：归档必须保留同模块已有设计 ----
     def test_archive_preserves_existing_module_design(self):
@@ -1083,14 +1147,14 @@ verify_failures: 0
 archive_confirmation: pending
 spec_base_hash: null
 design_base_hash: null
-worker_executor: claude
-worker_session_id: 6f0b1a2e-8c4d-4e5f-9a6b-7c8d9e0f1a2b
+worker_executor: opencode
+worker_transport: cli
+worker_session_id: ses_test
 archived: false
 ''')
         state = parse_state(p)
-        self.assertEqual(state["worker_executor"], "claude")
-        self.assertEqual(state["worker_session_id"],
-                         "6f0b1a2e-8c4d-4e5f-9a6b-7c8d9e0f1a2b")
+        self.assertEqual(state["worker_executor"], "opencode")
+        self.assertEqual(state["worker_session_id"], "ses_test")
 
     def test_parse_state_partial_session_field_fails_closed(self):
         p = os.path.join(self.change_dir(), ".ar.yaml")
@@ -1125,8 +1189,9 @@ worker_session_id: '6f0b1a2e-8c4d-4e5f-9a6b-7c8d9e0f1a2b\t'
         plan_old = plan_archive(self.root, self.change)
         _write(with_session, original.replace(
             "archived: false",
-            "worker_executor: claude\n"
-            "worker_session_id: 6f0b1a2e-8c4d-4e5f-9a6b-7c8d9e0f1a2b\n"
+            "worker_executor: opencode\n"
+            "worker_transport: cli\n"
+            "worker_session_id: ses_test\n"
             "archived: false"))
         plan_new = plan_archive(self.root, self.change)
         for key in ("ok", "affected_modules", "change_name"):

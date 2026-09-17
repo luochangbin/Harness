@@ -1,7 +1,7 @@
 # 场景：Worker 改动 codespec/ 必须拦截
 
 ## 仓库状态
-已初始化 AR 仓库；active AR `AR-015-worker-mut`（phase: build，tasks.md 存在非空）；`codespec/.ar/config.yaml` 已含 `default_executor: claude`；假 `claude` 可启动；executor_support.py 可用。假 claude 的行为：**额外修改 `codespec/changes/AR-015-worker-mut/tasks.md`**（越权写入）。
+已初始化 AR 仓库；active AR `AR-015-worker-mut`（phase: build，tasks.md 存在非空）；`codespec/.ar/config.yaml` 已含 `default_executor: opencode`；假 OpenCode 可启动；executor_support.py 可用。假 OpenCode 的行为：**额外修改 `codespec/changes/AR-015-worker-mut/tasks.md`**（越权写入）。
 
 ## 用户输入
 "继续 Build"

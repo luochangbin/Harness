@@ -965,3 +965,30 @@ test('permission reconciliation does not clear a newer permission after an empty
   assert.equal(finalState.interaction.id, 'perm_new');
   assert.equal(bridge.pending(runtime.projectKey, 'ses_test').id, 'perm_new');
 });
+test('safe read permission events are automatically approved once', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cw-reg-auto-perm-'));
+  const runtime = await runtimeFor(root);
+  const calls = [];
+  const sse = 'data: ' + JSON.stringify({
+    type: 'permission.asked',
+    properties: {
+      id: 'perm_auto_read',
+      sessionID: 'ses_test',
+      permission: 'read',
+      patterns: [path.join(root, '..', 'shared', 'README.md')]
+    }
+  }) + '\n\n';
+  const client = fakeClient({
+    events: async () => new Response(sse),
+    permission: async (_runtime, sessionId, permissionId, response) => {
+      calls.push({ sessionId, permissionId, response });
+      return { accepted: true };
+    }
+  });
+  const manager = new SessionManager(client, new SessionStateStore(path.join(root, '.state')), new PermissionBridge());
+  await manager.create(runtime, { change: 'AR-001-auto-perm', agent: 'ar-worker', access: 'workspace-write' });
+  await manager.send(runtime, 'ses_test', 'AR-001-auto-perm', 'all', 'go', 0);
+  const snapshot = await manager.wait(runtime, 'ses_test', 1, 1000);
+  assert.equal(snapshot.status, 'running');
+  assert.deepEqual(calls, [{ sessionId: 'ses_test', permissionId: 'perm_auto_read', response: 'once' }]);
+});

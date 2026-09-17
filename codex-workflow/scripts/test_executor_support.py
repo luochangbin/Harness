@@ -55,11 +55,11 @@ class DefaultExecutorReadTest(unittest.TestCase):
         self.assertEqual(es.read_default_executor(self.root), "ask")
 
     def test_existing_field_returns_value(self):
-        _write(self.config, "language: zh-CN\ndefault_executor: claude\nmodules: []\n")
-        self.assertEqual(es.read_default_executor(self.root), "claude")
+        _write(self.config, "language: zh-CN\ndefault_executor: opencode\nmodules: []\n")
+        self.assertEqual(es.read_default_executor(self.root), "opencode")
 
     def test_duplicate_field_fails(self):
-        _write(self.config, "default_executor: claude\ndefault_executor: opencode\n")
+        _write(self.config, "default_executor: opencode\ndefault_executor: current\n")
         with self.assertRaises(ValueError):
             es.read_default_executor(self.root)
 
@@ -144,12 +144,12 @@ class DefaultExecutorWriteTest(unittest.TestCase):
 
     def test_insert_preserves_comments_order_and_utf8(self):
         _write(self.config, CONFIG_WITH_MODULES)
-        es.write_default_executor(self.root, "claude")
+        es.write_default_executor(self.root, "opencode")
         content = _read(self.config)
         self.assertIn("# AR 工作流项目配置", content)
         self.assertIn("language: zh-CN", content)
-        self.assertIn("default_executor: claude", content)
-        self.assertLess(content.index("default_executor: claude"),
+        self.assertIn("default_executor: opencode", content)
+        self.assertLess(content.index("default_executor: opencode"),
                         content.index("modules:"))
         self.assertIn("label: 认证", content)
         self.assertIn("- id: auth", content)
@@ -163,7 +163,7 @@ class DefaultExecutorWriteTest(unittest.TestCase):
         self.assertEqual(lines[1], "default_executor: opencode")
 
     def test_existing_field_replaced_in_place(self):
-        _write(self.config, "language: zh-CN\ndefault_executor: claude\nmodules: []\n")
+        _write(self.config, "language: zh-CN\ndefault_executor: opencode\nmodules: []\n")
         es.write_default_executor(self.root, "opencode")
         content = _read(self.config)
         self.assertEqual(content.count("default_executor:"), 1)
@@ -187,7 +187,7 @@ class DefaultExecutorWriteTest(unittest.TestCase):
         before = _read(self.config)
         with mock.patch("executor_support.os.replace", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
-                es.write_default_executor(self.root, "claude")
+                es.write_default_executor(self.root, "opencode")
         self.assertEqual(_read(self.config), before)
 
 
@@ -209,12 +209,8 @@ class DetectExecutorsTest(unittest.TestCase):
                          ["C:/bin/opencode.exe", "--version"])
 
     def test_other_agent_is_detected_but_not_guessed_as_adapter(self):
-        result = es.probe_executor(
-            "other", agent_name="aider",
-            which=mock.Mock(return_value="C:/bin/aider.exe"),
-            run=mock.Mock(return_value=FakeResult(0)))
-        self.assertEqual(result["decision"], "installed_but_adapter_missing")
-        self.assertEqual(result["agent_name"], "aider")
+        with self.assertRaises(ValueError):
+            es.probe_executor("other", agent_name="aider")
 
     def test_other_agent_rejects_paths_or_shell_text(self):
         for name in ("../aider", "foo/bar", "aider --yes", "C:/tools/aider"):
@@ -232,13 +228,12 @@ class DetectExecutorsTest(unittest.TestCase):
         self.assertEqual(es.detect_external_executors(which=which, run=run), [])
         run.assert_not_called()
 
-    def test_only_claude(self):
+    def test_only_opencode_when_claude_is_installed(self):
         def which(name):
             return "C:/bin/claude.exe" if name == "claude" else None
         run = mock.Mock(return_value=FakeResult(0))
-        self.assertEqual(es.detect_external_executors(which=which, run=run), ["claude"])
-        run.assert_called_once()
-        self.assertEqual(run.call_args.args[0][0], "C:/bin/claude.exe")
+        self.assertEqual(es.detect_external_executors(which=which, run=run), [])
+        run.assert_not_called()
 
     def test_only_opencode(self):
         def which(name):
@@ -250,14 +245,12 @@ class DetectExecutorsTest(unittest.TestCase):
         which = mock.Mock(side_effect=lambda name: "C:/bin/" + name + ".exe")
         run = mock.Mock(return_value=FakeResult(0))
         self.assertEqual(es.detect_external_executors(which=which, run=run),
-                         ["claude", "opencode"])
+                         ["opencode"])
 
     def test_version_timeout_excluded(self):
         which = mock.Mock(side_effect=lambda name: "C:/bin/" + name + ".exe")
 
         def run(args, **kwargs):
-            if "claude" in args[0]:
-                raise subprocess.TimeoutExpired(args, timeout=5)
             return FakeResult(0)
         self.assertEqual(es.detect_external_executors(which=which, run=run), ["opencode"])
 
@@ -288,11 +281,11 @@ class ResolveExecutorTest(unittest.TestCase):
         self.assertEqual(d["reason_code"], "FIRST_BUILD_SELECTION_REQUIRED")
 
     def test_restricted_first_build_does_not_use_pre_scanned_candidates(self):
-        d = self._resolve_restricted(available_external=["claude"])
+        d = self._resolve_restricted(available_external=["opencode"])
         self.assertEqual(d["decision"], "ask")
 
     def test_restricted_explicit_external_false_negative_requires_host_probe(self):
-        d = self._resolve_restricted(explicit="claude")
+        d = self._resolve_restricted(explicit="opencode")
         self.assertEqual(d["decision"], "host_probe")
 
     def test_restricted_configured_external_false_negative_requires_host_probe(self):
@@ -309,14 +302,14 @@ class ResolveExecutorTest(unittest.TestCase):
         self.assertEqual(d["decision"], "use")
         self.assertEqual(d["selected"], "current")
 
-    def test_restricted_bugfix_without_default_stays_current(self):
-        d = self._resolve_restricted(mode="bugfix")
-        self.assertEqual(d["decision"], "use")
-        self.assertEqual(d["selected"], "current")
-        self.assertEqual(d["reason_code"], "BUGFIX_NO_CONFIG")
+    def test_ordinary_without_default_asks_before_any_host_probe(self):
+        d = self._resolve_restricted(mode="ordinary")
+        self.assertEqual(d["decision"], "ask")
+        self.assertIsNone(d["selected"])
+        self.assertEqual(d["reason_code"], "FIRST_BUILD_SELECTION_REQUIRED")
 
     def test_ar_explicit_current(self):
-        d = es.resolve_executor("ar", "current", None, ["claude"])
+        d = es.resolve_executor("ar", "current", None, ["opencode"])
         self.assertEqual(d, {
             "decision": "use", "selected": "current",
             "persist_after_confirmation": False,
@@ -324,14 +317,14 @@ class ResolveExecutorTest(unittest.TestCase):
         })
 
     def test_ar_explicit_external_available(self):
-        d = es.resolve_executor("ar", "opencode", None, ["claude", "opencode"])
+        d = es.resolve_executor("ar", "opencode", None, ["opencode"])
         self.assertEqual(d["decision"], "use")
         self.assertEqual(d["selected"], "opencode")
         self.assertFalse(d["persist_after_confirmation"])
         self.assertEqual(d["reason_code"], "EXPLICIT_EXTERNAL_OK")
 
     def test_ar_explicit_external_unavailable_is_error(self):
-        d = es.resolve_executor("ar", "claude", None, ["opencode"])
+        d = es.resolve_executor("ar", "opencode", None, [])
         self.assertEqual(d["decision"], "error")
         self.assertIsNone(d["selected"])
         self.assertFalse(d["persist_after_confirmation"])
@@ -344,21 +337,21 @@ class ResolveExecutorTest(unittest.TestCase):
         self.assertFalse(d["persist_after_confirmation"])
 
     def test_ar_configured_external_available(self):
-        d = es.resolve_executor("ar", None, "claude", ["claude"])
+        d = es.resolve_executor("ar", None, "opencode", ["opencode"])
         self.assertEqual(d["decision"], "use")
-        self.assertEqual(d["selected"], "claude")
+        self.assertEqual(d["selected"], "opencode")
         self.assertFalse(d["persist_after_confirmation"])
         self.assertEqual(d["reason_code"], "CONFIGURED_EXTERNAL_OK")
 
     def test_ar_configured_external_unavailable_asks(self):
-        d = es.resolve_executor("ar", None, "claude", ["opencode"])
+        d = es.resolve_executor("ar", None, "opencode", [])
         self.assertEqual(d["decision"], "ask")
         self.assertIsNone(d["selected"])
         self.assertTrue(d["persist_after_confirmation"])
         self.assertEqual(d["reason_code"], "CONFIGURED_EXTERNAL_UNAVAILABLE")
 
     def test_ar_first_build_asks_once_and_persists(self):
-        d = es.resolve_executor("ar", None, None, ["claude"])
+        d = es.resolve_executor("ar", None, None, ["opencode"])
         self.assertEqual(d["decision"], "ask")
         self.assertIsNone(d["selected"])
         self.assertTrue(d["persist_after_confirmation"])
@@ -376,31 +369,28 @@ class ResolveExecutorTest(unittest.TestCase):
         self.assertEqual(d["decision"], "ask")
         self.assertEqual(d["reason_code"], "FIRST_BUILD_SELECTION_REQUIRED")
 
-    def test_bugfix_no_config_is_current_without_asking(self):
-        d = es.resolve_executor("bugfix", None, None, ["claude"])
-        self.assertEqual(d["decision"], "use")
-        self.assertEqual(d["selected"], "current")
-        self.assertFalse(d["persist_after_confirmation"])
-        self.assertEqual(d["reason_code"], "BUGFIX_NO_CONFIG")
+    def test_bugfix_mode_is_not_a_supported_executor_mode(self):
+        with self.assertRaises(ValueError):
+            es.resolve_executor("bugfix", None, None, ["claude"])
 
-    def test_bugfix_configured_current_no_dispatch(self):
-        d = es.resolve_executor("bugfix", None, "current", ["claude"])
+    def test_ordinary_configured_current_no_dispatch(self):
+        d = es.resolve_executor("ordinary", None, "current", ["claude"])
         self.assertEqual(d["selected"], "current")
         self.assertEqual(d["reason_code"], "CONFIGURED_CURRENT")
 
-    def test_bugfix_configured_external_available(self):
-        d = es.resolve_executor("bugfix", None, "opencode", ["opencode"])
+    def test_ordinary_configured_external_available(self):
+        d = es.resolve_executor("ordinary", None, "opencode", ["opencode"])
         self.assertEqual(d["decision"], "use")
         self.assertEqual(d["selected"], "opencode")
         self.assertFalse(d["persist_after_confirmation"])
 
-    def test_bugfix_configured_external_unavailable_asks(self):
-        d = es.resolve_executor("bugfix", None, "claude", [])
+    def test_ordinary_configured_external_unavailable_asks(self):
+        d = es.resolve_executor("ordinary", None, "opencode", [])
         self.assertEqual(d["decision"], "ask")
         self.assertTrue(d["persist_after_confirmation"])
 
     def test_explicit_beats_configured(self):
-        d = es.resolve_executor("ar", "current", "claude", ["claude"])
+        d = es.resolve_executor("ar", "current", "opencode", ["opencode"])
         self.assertEqual(d["selected"], "current")
         self.assertEqual(d["reason_code"], "EXPLICIT_CURRENT")
 
@@ -431,8 +421,7 @@ class InspectCommandTest(unittest.TestCase):
         self.assertEqual(data["selected"], None)
         self.assertTrue(data["persist_after_confirmation"])
         self.assertEqual(data["reason_code"], "FIRST_BUILD_SELECTION_REQUIRED")
-        self.assertEqual(data["choices"],
-                         ["current", "subagent", "opencode"])
+        self.assertEqual(data["choices"], ["current", "opencode"])
         detect.assert_not_called()
 
     def test_restricted_sandbox_still_asks_before_targeted_probe(self):
@@ -466,22 +455,35 @@ class InspectCommandTest(unittest.TestCase):
         self.assertEqual(data["decision"], "use")
         self.assertEqual(data["selected"], "current")
 
+    def test_ordinary_subagent_binding_precedes_changed_project_default(self):
+        run_key = "ordinary:native-1"
+        _write(self.config, "language: zh-CN\ndefault_executor: ask\nmodules: []\n")
+        path = os.path.join(self.root, ".codex-workflow", "ordinary-sessions", "native-1.json")
+        _write(path, json.dumps({"schema_version": 1, "namespace": "ordinary",
+                                 "run_key": run_key, "executor": "subagent",
+                                 "transport": "native", "session_id": "native-1"}))
+        es.write_default_executor(self.root, "current")
+        code, out = self._run([
+            "--mode", "ordinary", "--run-key", run_key,
+            "--subagent-available", "--controller-runtime", "codex",
+        ])
+        self.assertEqual(code, 2)
+
     def test_first_choice_menu_excludes_controller_runtime(self):
         _write(self.config, "language: zh-CN\ndefault_executor: ask\nmodules: []\n")
         code, out = self._run(["--controller-runtime", "opencode"])
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out)["choices"],
-                         ["current", "subagent", "opencode"])
+        self.assertEqual(json.loads(out)["choices"], ["current", "opencode"])
 
     def test_configured_external_use(self):
-        _write(self.config, "default_executor: claude\nmodules: []\n")
+        _write(self.config, "default_executor: opencode\nmodules: []\n")
         with mock.patch("executor_support.detect_external_executors",
-                        return_value=["claude"]):
+                        return_value=["opencode"]):
             code, out = self._run([])
         self.assertEqual(code, 0)
         data = json.loads(out)
         self.assertEqual(data["decision"], "use")
-        self.assertEqual(data["selected"], "claude")
+        self.assertEqual(data["selected"], "opencode")
 
     def test_corrupt_config_exit_2(self):
         _write(self.config, "default_executor: claude\ndefault_executor: opencode\n")
@@ -490,7 +492,7 @@ class InspectCommandTest(unittest.TestCase):
         self.assertIn("error", json.loads(out))
 
     def test_probe_failure_exit_3(self):
-        _write(self.config, "language: zh-CN\ndefault_executor: claude\nmodules: []\n")
+        _write(self.config, "language: zh-CN\ndefault_executor: opencode\nmodules: []\n")
         with mock.patch("executor_support.detect_external_executors",
                         side_effect=OSError("probe crash")):
             code, out = self._run([])
@@ -502,15 +504,21 @@ class InspectCommandTest(unittest.TestCase):
             code = es.main(["inspect", "--root", self.root, "--mode", "bogus"])
         self.assertEqual(code, 2)
 
+    def test_bugfix_mode_is_rejected_by_inspect_cli(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = es.main(["inspect", "--root", self.root, "--mode", "bugfix"])
+        self.assertEqual(code, 2)
+
     def test_set_default_writes_config(self):
         _write(self.config, "language: zh-CN\nmodules: []\n")
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             code = es.main(["set-default", "--root", self.root,
-                            "--executor", "claude"])
+                            "--executor", "opencode"])
         self.assertEqual(code, 0)
         self.assertEqual(_read(self.config),
-                         "language: zh-CN\ndefault_executor: claude\nmodules: []\n")
+                         "language: zh-CN\ndefault_executor: opencode\nmodules: []\n")
 
     def test_set_default_invalid_exit_2(self):
         _write(self.config, "language: zh-CN\nmodules: []\n")
@@ -546,7 +554,7 @@ archived: false
 
 NEW_STATE = OLD_STATE.replace(
     "design_base_hash: null",
-    "design_base_hash: null\nworker_executor: claude\nworker_session_id: 6f0b1a2e-8c4d-4e5f-9a6b-7c8d9e0f1a2b")
+    "design_base_hash: null\nworker_executor: opencode\nworker_transport: server\nworker_session_id: ses_abc123")
 
 
 class WorkerSessionReadTest(unittest.TestCase):
@@ -573,8 +581,18 @@ class WorkerSessionReadTest(unittest.TestCase):
     def test_valid_binding_returns_dict(self):
         self._state(NEW_STATE)
         s = es.read_worker_session(self.root, "AR-001-test")
-        self.assertEqual(s["executor"], "claude")
-        self.assertEqual(s["id"], "6f0b1a2e-8c4d-4e5f-9a6b-7c8d9e0f1a2b")
+        self.assertEqual(s["executor"], "opencode")
+        self.assertEqual(s["id"], "ses_abc123")
+
+    def test_legacy_tier_binding_is_rejected_without_writing(self):
+        self._state(OLD_STATE.replace("tier: full", "tier: tweak"))
+        before = _read(_state_path(self.root))
+        with self.assertRaises(ValueError):
+            es.read_worker_session(self.root, "AR-001-test")
+        with self.assertRaises(ValueError):
+            es.write_worker_session(
+                self.root, "AR-001-test", "subagent", "native-1")
+        self.assertEqual(_read(_state_path(self.root)), before)
 
     def test_duplicate_null_executor_fails_closed(self):
         self._state(OLD_STATE.replace(
@@ -594,15 +612,15 @@ class WorkerSessionReadTest(unittest.TestCase):
 
     def test_duplicate_value_fields_fail_closed(self):
         self._state(NEW_STATE.replace(
-            "worker_executor: claude",
-            "worker_executor: claude\nworker_executor: opencode"))
+            "worker_executor: opencode",
+            "worker_executor: opencode\nworker_executor: current"))
         with self.assertRaises(ValueError):
             es.read_worker_session(self.root, "AR-001-test")
 
     def test_partial_field_fails_closed(self):
         self._state(OLD_STATE.replace(
             "design_base_hash: null",
-            "design_base_hash: null\nworker_executor: claude"))
+            "design_base_hash: null\nworker_executor: subagent"))
         with self.assertRaises(ValueError):
             es.read_worker_session(self.root, "AR-001-test")
 
@@ -617,23 +635,23 @@ class WorkerSessionReadTest(unittest.TestCase):
     def test_empty_session_id_fails(self):
         self._state(OLD_STATE.replace(
             "design_base_hash: null",
-            "design_base_hash: null\nworker_executor: claude\nworker_session_id: ''"))
+            "design_base_hash: null\nworker_executor: opencode\nworker_transport: server\nworker_session_id: ''"))
         with self.assertRaises(ValueError):
             es.read_worker_session(self.root, "AR-001-test")
 
     def test_control_char_session_id_fails(self):
         self._state(OLD_STATE.replace(
             "design_base_hash: null",
-            "design_base_hash: null\nworker_executor: claude\n"
-            "worker_session_id: '6f0b1a2e-8c4d-4e5f-9a6b-7c8d9e0f1a2b\\n'"))
+            "design_base_hash: null\nworker_executor: opencode\nworker_transport: server\n"
+            "worker_session_id: 'ses_abc123\\n'"))
         with self.assertRaises(ValueError):
             es.read_worker_session(self.root, "AR-001-test")
 
     def test_claude_non_uuid_id_fails(self):
         self._state(OLD_STATE.replace(
             "design_base_hash: null",
-            "design_base_hash: null\nworker_executor: claude\n"
-            "worker_session_id: not-a-uuid"))
+            "design_base_hash: null\nworker_executor: opencode\nworker_transport: server\n"
+            "worker_session_id: not-a-valid-id!"))
         with self.assertRaises(ValueError):
             es.read_worker_session(self.root, "AR-001-test")
 
@@ -696,10 +714,10 @@ class WorkerSessionReadTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             es.read_worker_session(self.root, "AR-001-test")
 
-    def test_claude_binding_rejects_opencode_agent(self):
+    def test_opencode_binding_rejects_duplicate_agent(self):
         self._state(NEW_STATE.replace(
             "worker_session_id:",
-            "worker_agent: ar-worker-deepseek\nworker_session_id:"))
+            "worker_agent: ar-worker-deepseek\nworker_agent: another-agent\nworker_session_id:"))
         with self.assertRaises(ValueError):
             es.read_worker_session(self.root, "AR-001-test")
 
@@ -714,12 +732,12 @@ class WorkerSessionWriteTest(unittest.TestCase):
         _state_dir(self.root)
         state = u"# 状态文件\n" + OLD_STATE
         _write(_state_path(self.root), state)
-        es.write_worker_session(self.root, "AR-001-test", "claude",
-                                "6f0b1a2e-8c4d-4e5f-9a6b-7c8d9e0f1a2b")
+        es.write_worker_session(self.root, "AR-001-test", "opencode",
+                                "ses_new")
         content = _read(_state_path(self.root))
         self.assertTrue(content.startswith("# 状态文件\nar: AR-001-test"))
-        self.assertIn("worker_executor: claude", content)
-        self.assertIn("worker_session_id: 6f0b1a2e-8c4d-4e5f-9a6b-7c8d9e0f1a2b",
+        self.assertIn("worker_executor: opencode", content)
+        self.assertIn("worker_session_id: ses_new",
                       content)
         self.assertIn("tier: full", content)
         self.assertIn("modules: [auth]", content)
@@ -778,22 +796,21 @@ class WorkerSessionWriteTest(unittest.TestCase):
         _write(_state_path(self.root), NEW_STATE)
         cfg = os.path.join(self.root, "codespec", ".ar", "config.yaml")
         os.makedirs(os.path.dirname(cfg), exist_ok=True)
-        _write(cfg, "language: zh-CN\ndefault_executor: claude\nmodules: []\n")
+        _write(cfg, "language: zh-CN\ndefault_executor: opencode\nmodules: []\n")
         es.write_default_executor(self.root, "opencode")
         s = es.read_worker_session(self.root, "AR-001-test")
-        self.assertEqual(s["executor"], "claude")
-        self.assertEqual(s["id"], "6f0b1a2e-8c4d-4e5f-9a6b-7c8d9e0f1a2b")
+        self.assertEqual(s["executor"], "opencode")
+        self.assertEqual(s["id"], "ses_abc123")
 
     def test_write_rejects_corrupt_state_without_writing(self):
         _state_dir(self.root)
         corrupt = OLD_STATE.replace(
             "design_base_hash: null",
-            "design_base_hash: null\nworker_executor: claude")
+            "design_base_hash: null\nworker_executor: subagent")
         _write(_state_path(self.root), corrupt)
         before = _read(_state_path(self.root))
         with self.assertRaises(ValueError):
-            es.write_worker_session(self.root, "AR-001-test", "claude",
-                                    "6f0b1a2e-8c4d-4e5f-9a6b-7c8d9e0f1a2b")
+            es.write_worker_session(self.root, "AR-001-test", "subagent", "x")
         self.assertEqual(_read(_state_path(self.root)), before)
 
     def test_clear_rejects_corrupt_state_without_writing(self):
@@ -811,8 +828,8 @@ class WorkerSessionWriteTest(unittest.TestCase):
     def test_clear_rejects_duplicate_value_fields_without_writing(self):
         _state_dir(self.root)
         corrupt = NEW_STATE.replace(
-            "worker_executor: claude",
-            "worker_executor: claude\nworker_executor: opencode")
+            "worker_executor: opencode",
+            "worker_executor: opencode\nworker_executor: current")
         _write(_state_path(self.root), corrupt)
         before = _read(_state_path(self.root))
         with self.assertRaises(ValueError):
@@ -851,15 +868,13 @@ class GitRepositoryTest(unittest.TestCase):
 class BuildWorkerArgvTest(unittest.TestCase):
     UUID = "6f0b1a2e-8c4d-4e5f-9a6b-7c8d9e0f1a2b"
 
-    def test_claude_create_argv(self):
-        argv = es.build_worker_argv("claude", "create", "do work",
-                                    "C:/repo", self.UUID)
-        self.assertEqual(argv, ["claude", "--session-id", self.UUID, "-p", "do work"])
+    def test_legacy_executor_create_argv_is_rejected(self):
+        with self.assertRaises(ValueError):
+            es.build_worker_argv("claude", "create", "do work", "C:/repo", self.UUID)
 
-    def test_claude_resume_argv(self):
-        argv = es.build_worker_argv("claude", "resume", "do work",
-                                    "C:/repo", self.UUID)
-        self.assertEqual(argv, ["claude", "--resume", self.UUID, "-p", "do work"])
+    def test_legacy_executor_resume_argv_is_rejected(self):
+        with self.assertRaises(ValueError):
+            es.build_worker_argv("claude", "resume", "do work", "C:/repo", self.UUID)
 
     def test_opencode_create_argv(self):
         argv = es.build_worker_argv("opencode", "create", "do work",
@@ -893,9 +908,7 @@ class BuildWorkerArgvTest(unittest.TestCase):
                 controller_runtime="opencode")
 
     def test_no_continue_flag(self):
-        for executor, action, sid in (("claude", "create", self.UUID),
-                                      ("claude", "resume", self.UUID),
-                                      ("opencode", "create", None),
+        for executor, action, sid in (("opencode", "create", None),
                                       ("opencode", "resume", "s")):
             argv = es.build_worker_argv(executor, action, "p", "C:/repo", sid)
             self.assertNotIn("--continue", argv)
@@ -923,15 +936,15 @@ class BuildWorkerArgvTest(unittest.TestCase):
 
     def test_invalid_action_fails(self):
         with self.assertRaises(ValueError):
-            es.build_worker_argv("claude", "delete", "p", "C:/repo", None)
+            es.build_worker_argv("opencode", "delete", "p", "C:/repo", None)
 
-    def test_claude_create_requires_session_id(self):
+    def test_legacy_executor_create_is_rejected(self):
         with self.assertRaises(ValueError):
-            es.build_worker_argv("claude", "create", "p", "C:/repo", None)
+            es.build_worker_argv("subagent", "create", "p", "C:/repo", None)
 
-    def test_claude_resume_requires_session_id(self):
+    def test_legacy_executor_resume_is_rejected(self):
         with self.assertRaises(ValueError):
-            es.build_worker_argv("claude", "resume", "p", "C:/repo", None)
+            es.build_worker_argv("native", "resume", "p", "C:/repo", None)
 
     def test_opencode_create_rejects_session_id(self):
         with self.assertRaises(ValueError):
@@ -1265,19 +1278,19 @@ class ResolveWithSessionTest(unittest.TestCase):
     """P1 修复：显式覆盖 > AR 绑定 session > 项目默认 > 首次选择。"""
 
     def test_bound_beats_configured_current(self):
-        d = es.resolve_with_session("ar", None, "current", ["claude"], "claude")
+        d = es.resolve_with_session("ar", None, "current", ["opencode"], "opencode")
         self.assertEqual(d["decision"], "use")
-        self.assertEqual(d["selected"], "claude")
+        self.assertEqual(d["selected"], "opencode")
         self.assertEqual(d["reason_code"], "AR_BOUND_SESSION")
 
     def test_bound_beats_configured_other_external(self):
-        d = es.resolve_with_session("ar", None, "opencode", ["claude", "opencode"],
-                                    "claude")
-        self.assertEqual(d["selected"], "claude")
+        d = es.resolve_with_session("ar", None, "opencode", ["opencode"],
+                                    "opencode")
+        self.assertEqual(d["selected"], "opencode")
         self.assertEqual(d["reason_code"], "AR_BOUND_SESSION")
 
     def test_bound_unavailable_asks(self):
-        d = es.resolve_with_session("ar", None, "current", ["opencode"], "claude")
+        d = es.resolve_with_session("ar", None, "current", [], "opencode")
         self.assertEqual(d["decision"], "ask")
         self.assertIsNone(d["selected"])
         self.assertTrue(d["persist_after_confirmation"])
@@ -1288,24 +1301,24 @@ class ResolveWithSessionTest(unittest.TestCase):
         if "restricted_sandbox" not in params:
             self.fail("resolve_with_session 缺少 restricted_sandbox 输入")
         d = es.resolve_with_session(
-            "ar", None, "current", [], "claude", restricted_sandbox=True,
+            "ar", None, "current", [], "opencode", restricted_sandbox=True,
         )
         self.assertEqual(d["decision"], "host_probe")
         self.assertEqual(d["reason_code"], "RESTRICTED_SANDBOX_HOST_PROBE")
 
     def test_explicit_beats_bound(self):
-        d = es.resolve_with_session("ar", "current", "claude", ["claude"], "claude")
+        d = es.resolve_with_session("ar", "current", "opencode", ["opencode"], "opencode")
         self.assertEqual(d["selected"], "current")
         self.assertEqual(d["reason_code"], "EXPLICIT_CURRENT")
-        d = es.resolve_with_session("ar", "opencode", "claude",
-                                    ["claude", "opencode"], "claude")
+        d = es.resolve_with_session("ar", "opencode", "opencode",
+                                    ["opencode"], "opencode")
         self.assertEqual(d["selected"], "opencode")
         self.assertEqual(d["reason_code"], "EXPLICIT_EXTERNAL_OK")
 
     def test_no_bound_falls_through_to_config(self):
-        d = es.resolve_with_session("ar", None, "current", ["claude"], None)
+        d = es.resolve_with_session("ar", None, "current", ["opencode"], None)
         self.assertEqual(d["selected"], "current")
-        d = es.resolve_with_session("ar", None, None, ["claude"], None)
+        d = es.resolve_with_session("ar", None, None, ["opencode"], None)
         self.assertEqual(d["reason_code"], "FIRST_BUILD_SELECTION_REQUIRED")
 
     def test_same_controller_runtime_uses_current_without_recursion(self):
@@ -1338,38 +1351,38 @@ class InspectChangeRoutingTest(unittest.TestCase):
             code = es.main(args)
         return code, json.loads(buf.getvalue())
 
-    def test_bound_claude_with_default_current_uses_bound(self):
-        _write(self.config, "language: zh-CN\ndefault_executor: current\nmodules: []\n")
-        _write(self.state, NEW_STATE)
-        with mock.patch("executor_support.detect_external_executors",
-                        return_value=["claude"]):
-            code, out = self._run()
-        self.assertEqual(code, 0)
-        self.assertEqual(out["bound_executor"], "claude")
-        self.assertEqual(out["decision"], "use")
-        self.assertEqual(out["selected"], "claude")
-        self.assertEqual(out["reason_code"], "AR_BOUND_SESSION")
-
-    def test_bound_claude_with_default_opencode_uses_bound(self):
-        _write(self.config, "language: zh-CN\ndefault_executor: opencode\nmodules: []\n")
-        _write(self.state, NEW_STATE)
-        with mock.patch("executor_support.detect_external_executors",
-                        return_value=["claude", "opencode"]):
-            code, out = self._run()
-        self.assertEqual(code, 0)
-        self.assertEqual(out["selected"], "claude")
-        self.assertEqual(out["reason_code"], "AR_BOUND_SESSION")
-
-    def test_bound_unavailable_asks_with_available_options(self):
+    def test_bound_opencode_with_default_current_uses_bound(self):
         _write(self.config, "language: zh-CN\ndefault_executor: current\nmodules: []\n")
         _write(self.state, NEW_STATE)
         with mock.patch("executor_support.detect_external_executors",
                         return_value=["opencode"]):
             code, out = self._run()
         self.assertEqual(code, 0)
-        self.assertEqual(out["bound_executor"], "claude")
+        self.assertEqual(out["bound_executor"], "opencode")
+        self.assertEqual(out["decision"], "use")
+        self.assertEqual(out["selected"], "opencode")
+        self.assertEqual(out["reason_code"], "AR_BOUND_SESSION")
+
+    def test_bound_opencode_with_default_opencode_uses_bound(self):
+        _write(self.config, "language: zh-CN\ndefault_executor: opencode\nmodules: []\n")
+        _write(self.state, NEW_STATE)
+        with mock.patch("executor_support.detect_external_executors",
+                        return_value=["opencode"]):
+            code, out = self._run()
+        self.assertEqual(code, 0)
+        self.assertEqual(out["selected"], "opencode")
+        self.assertEqual(out["reason_code"], "AR_BOUND_SESSION")
+
+    def test_bound_unavailable_asks_with_available_options(self):
+        _write(self.config, "language: zh-CN\ndefault_executor: current\nmodules: []\n")
+        _write(self.state, NEW_STATE)
+        with mock.patch("executor_support.detect_external_executors",
+                        return_value=[]):
+            code, out = self._run()
+        self.assertEqual(code, 0)
+        self.assertEqual(out["bound_executor"], "opencode")
         self.assertEqual(out["decision"], "ask")
-        self.assertEqual(out["available_external"], ["opencode"])
+        self.assertEqual(out["available_external"], [])
         self.assertEqual(out["reason_code"], "BOUND_EXECUTOR_UNAVAILABLE")
 
     def test_bound_false_negative_with_restricted_flag_requires_host_probe(self):
@@ -1386,10 +1399,10 @@ class InspectChangeRoutingTest(unittest.TestCase):
         _write(self.config, "language: zh-CN\nmodules: []\n")
         _write(self.state, NEW_STATE)
         with mock.patch("executor_support.detect_external_executors",
-                        return_value=["claude"]):
+                        return_value=[]):
             code, out = self._run(["--explicit", "current"])
         self.assertEqual(code, 0)
-        self.assertEqual(out["bound_executor"], "claude")
+        self.assertEqual(out["bound_executor"], "opencode")
         self.assertEqual(out["decision"], "use")
         self.assertEqual(out["selected"], "current")
 
@@ -1424,13 +1437,10 @@ class WorkerArgvCommandTest(unittest.TestCase):
             code = es.main(["worker-argv"] + args)
         return code, buf.getvalue()
 
-    def test_claude_create_outputs_argv(self):
+    def test_legacy_claude_create_is_rejected(self):
         code, out = self._run(["--executor", "claude", "--action", "create",
                                "--session-id", self.UUID], "do work")
-        self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out),
-                         {"argv": ["claude", "--session-id", self.UUID,
-                                   "-p", "do work"]})
+        self.assertEqual(code, 2)
 
     def test_opencode_resume_outputs_argv(self):
         code, out = self._run(["--executor", "opencode", "--action", "resume",
@@ -1562,6 +1572,8 @@ class WorkerRunCommandTest(unittest.TestCase):
         os.makedirs(os.path.join(self.root, "codespec"))
         self.prompt_file = os.path.join(self.root, "prompt.txt")
         _write(self.prompt_file, "处理 {{AR_CHANGE}} 批次 {{TASK_BATCH}}")
+        self.ordinary_prompt_file = os.path.join(self.root, "ordinary-prompt.txt")
+        _write(self.ordinary_prompt_file, "run={{RUN_KEY}} batch={{TASK_BATCH}}")
         self.stdout_path = os.path.join(self.root, "stdout.jsonl")
         self.stderr_path = os.path.join(self.root, "stderr.log")
         _write(self.stdout_path,
@@ -1666,6 +1678,212 @@ class WorkerRunCommandTest(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             code = es.main(["worker-run", "--help"])
         self.assertEqual(code, 0)
+
+    def test_ordinary_run_key_dispatch_does_not_require_ar_documents(self):
+        prompt_file = os.path.join(self.root, "ordinary-prompt.txt")
+        _write(prompt_file, "run={{RUN_KEY}} batch={{TASK_BATCH}}")
+        captured = {}
+
+        def run_guard(argv, root, timeout_seconds):
+            captured["argv"] = argv
+            captured["root"] = root
+            return {
+                "completed": True,
+                "worker_exit_code": 0,
+                "stdout_path": self.stdout_path,
+                "stderr_path": self.stderr_path,
+                "launch_executable": "opencode",
+                "codespec_check": {"ok": True, "changed": False,
+                                    "changes": {"added": [], "removed": [], "modified": []}},
+                "workspace_check": {"ok": True, "changed": False,
+                                     "changes": {"added": [], "removed": [], "modified": []}},
+            }
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), \
+                mock.patch("executor_support.run_worker_with_codespec_guard",
+                           side_effect=run_guard):
+            code = es.main([
+                "worker-run", "--executor", "opencode", "--action", "create",
+                "--root", self.root, "--run-key", "ordinary:todo-1",
+                "--prompt-file", prompt_file, "--task-batch", "1,2",
+                "--controller-runtime", "codex",
+            ])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["root"], self.root)
+        self.assertIn("run=ordinary:todo-1 batch=1,2", captured["argv"][-1])
+        self.assertFalse(os.path.exists(os.path.join(
+            self.root, "codespec", "changes", "ordinary:todo-1")))
+        binding = es.read_ordinary_session(self.root, "ordinary:todo-1")
+        self.assertEqual(binding["session_id"], "ses_test")
+        self.assertEqual(binding["task_batch"], "1,2")
+
+    def test_unrendered_ordinary_placeholder_fails_before_worker(self):
+        prompt_file = os.path.join(self.root, "ordinary-prompt.txt")
+        _write(prompt_file,
+               "需求={{REQUIREMENT}} run={{RUN_KEY}} batch={{TASK_BATCH}}")
+        with mock.patch("executor_support.run_worker_with_codespec_guard") as guard:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = es.main([
+                    "worker-run", "--executor", "opencode", "--action", "create",
+                    "--root", self.root, "--run-key", "ordinary:todo-2",
+                    "--prompt-file", prompt_file, "--task-batch", "1,2",
+                    "--controller-runtime", "codex",
+                ])
+        self.assertEqual(code, 2)
+        guard.assert_not_called()
+
+    def test_ordinary_nonzero_exit_persists_session_for_repair(self):
+        prompt_file = os.path.join(self.root, "ordinary-prompt.txt")
+        _write(prompt_file, "run={{RUN_KEY}} batch={{TASK_BATCH}}")
+        result = {
+            "completed": True,
+            "worker_exit_code": 9,
+            "stdout_path": self.stdout_path,
+            "stderr_path": self.stderr_path,
+            "launch_executable": "opencode",
+            "codespec_check": {"ok": True, "changed": False,
+                                "changes": {"added": [], "removed": [], "modified": []}},
+            "workspace_check": {"ok": True, "changed": False,
+                                 "changes": {"added": [], "removed": [], "modified": []}},
+        }
+        with mock.patch("executor_support.run_worker_with_codespec_guard",
+                        return_value=result):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = es.main([
+                    "worker-run", "--executor", "opencode", "--action", "create",
+                    "--root", self.root, "--run-key", "ordinary:todo-4",
+                    "--prompt-file", prompt_file, "--task-batch", "1,2",
+                    "--controller-runtime", "codex",
+                ])
+        self.assertEqual(code, 4)
+        self.assertEqual(es.read_ordinary_session(
+            self.root, "ordinary:todo-4")["session_id"], "ses_test")
+
+    def test_ordinary_resume_rejects_new_session_id_without_changing_binding(self):
+        es.write_ordinary_session(self.root, "ordinary:todo-5", "opencode",
+                                   "ses_bound", transport="cli")
+        _write(self.stdout_path,
+               '{"sessionID":"ses_other","part":{"tokens":{"input":3,'
+               '"output":2,"cache":{"read":5,"write":0}}}}\n')
+        result = {
+            "completed": True,
+            "worker_exit_code": 0,
+            "stdout_path": self.stdout_path,
+            "stderr_path": self.stderr_path,
+            "launch_executable": "opencode",
+            "codespec_check": {"ok": True, "changed": False,
+                                "changes": {"added": [], "removed": [], "modified": []}},
+            "workspace_check": {"ok": True, "changed": False,
+                                 "changes": {"added": [], "removed": [], "modified": []}},
+        }
+        before = es.read_ordinary_session(self.root, "ordinary:todo-5")
+        with mock.patch("executor_support.run_worker_with_codespec_guard",
+                        return_value=result) as guard:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = es.main(self._ordinary_resume_args("ordinary:todo-5"))
+        self.assertEqual(code, 6)
+        guard.assert_called_once()
+        self.assertEqual(es.read_ordinary_session(
+            self.root, "ordinary:todo-5"), before)
+
+    def test_ordinary_timeout_rejects_new_session_id_without_changing_binding(self):
+        es.write_ordinary_session(self.root, "ordinary:todo-6", "opencode",
+                                   "ses_bound", transport="cli")
+        _write(self.stdout_path,
+               '{"sessionID":"ses_other","part":{"tokens":{"input":3,'
+               '"output":2,"cache":{"read":5,"write":0}}}}\n')
+        result = {
+            "completed": True,
+            "timed_out": True,
+            "timeout_seconds": 1800,
+            "worker_exit_code": -1,
+            "stdout_path": self.stdout_path,
+            "stderr_path": self.stderr_path,
+            "launch_executable": "opencode",
+            "codespec_check": {"ok": True, "changed": False,
+                                "changes": {"added": [], "removed": [], "modified": []}},
+            "workspace_check": {"ok": True, "changed": False,
+                                 "changes": {"added": [], "removed": [], "modified": []}},
+        }
+        before = es.read_ordinary_session(self.root, "ordinary:todo-6")
+        with mock.patch("executor_support.run_worker_with_codespec_guard",
+                        return_value=result) as guard:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = es.main(self._ordinary_resume_args("ordinary:todo-6"))
+        self.assertEqual(code, 6)
+        guard.assert_called_once()
+        self.assertEqual(es.read_ordinary_session(
+            self.root, "ordinary:todo-6"), before)
+
+    def test_rendered_ordinary_requirement_prompt_passes_and_preserves_code_braces(self):
+        prompt_file = os.path.join(self.root, "ordinary-prompt.txt")
+        _write(prompt_file,
+               "需求=修复登录；验收=登录成功；测试=pytest {case}\n"
+               "run={{RUN_KEY}} batch={{TASK_BATCH}}")
+        prompt = es.load_ordinary_worker_prompt(
+            prompt_file, "ordinary:todo-3", "1,2")
+        self.assertIn("需求=修复登录；验收=登录成功；测试=pytest {case}", prompt)
+        self.assertNotIn("{{RUN_KEY}}", prompt)
+
+    def _ordinary_resume_args(self, run_key="ordinary:todo-1", worker_agent=None):
+        args = [
+            "worker-run", "--executor", "opencode", "--action", "resume",
+            "--root", self.root, "--run-key", run_key,
+            "--prompt-file", self.ordinary_prompt_file, "--task-batch", "1,2",
+            "--controller-runtime", "codex",
+        ]
+        if worker_agent is not None:
+            args.extend(["--worker-agent", worker_agent])
+        return args
+
+    def test_resume_rejects_agent_override_before_worker_and_preserves_binding(self):
+        es.write_ordinary_session(self.root, "ordinary:todo-1", "opencode",
+                                   "ses_test", agent="bound-agent", transport="cli")
+        before = es.read_ordinary_session(self.root, "ordinary:todo-1")
+        with mock.patch("executor_support.run_worker_with_codespec_guard") as guard:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = es.main(self._ordinary_resume_args(worker_agent="other-agent"))
+        self.assertEqual(code, 2)
+        guard.assert_not_called()
+        self.assertEqual(es.read_ordinary_session(self.root, "ordinary:todo-1"), before)
+
+    def test_server_binding_cannot_resume_through_cli_worker(self):
+        es.write_ordinary_session(self.root, "ordinary:todo-1", "opencode",
+                                   "ses_test", agent="bound-agent", transport="server")
+        with mock.patch("executor_support.run_worker_with_codespec_guard") as guard:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = es.main(self._ordinary_resume_args())
+        self.assertEqual(code, 2)
+        guard.assert_not_called()
+        self.assertEqual(es.read_ordinary_session(
+            self.root, "ordinary:todo-1")["transport"], "server")
+
+    def test_create_rejects_existing_ordinary_binding_before_worker(self):
+        es.write_ordinary_session(self.root, "ordinary:todo-1", "opencode",
+                                   "ses_test", agent="bound-agent", transport="cli")
+        before = es.read_ordinary_session(self.root, "ordinary:todo-1")
+        prompt_file = os.path.join(self.root, "ordinary-prompt.txt")
+        _write(prompt_file, "run={{RUN_KEY}} batch={{TASK_BATCH}}")
+        with mock.patch("executor_support.run_worker_with_codespec_guard") as guard:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = es.main([
+                    "worker-run", "--executor", "opencode", "--action", "create",
+                    "--root", self.root, "--run-key", "ordinary:todo-1",
+                    "--prompt-file", prompt_file, "--task-batch", "1,2",
+                    "--controller-runtime", "codex",
+                ])
+        self.assertEqual(code, 2)
+        guard.assert_not_called()
+        self.assertEqual(es.read_ordinary_session(self.root, "ordinary:todo-1"), before)
 
 
 class GuardedWorkerRunTest(unittest.TestCase):

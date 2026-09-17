@@ -10,6 +10,7 @@ import { BrokerError, errorResult } from './errors.js';
 import { redactSecrets } from './schemas.js';
 import { projectKey } from './project-key.js';
 import { ProjectFileLock } from './project-lock.js';
+import { registerOrdinaryTools } from './ordinary-tools.js';
 
 const serverManager = new ServerManager();
 const permissions = new PermissionBridge();
@@ -26,6 +27,8 @@ const server = new McpServer({ name: 'codex-workflow-opencode-broker', version: 
 const rootInput = { root: z.string().min(1) };
 const sessionInput = { ...rootInput, sessionId: z.string().min(1) };
 const change = z.string().regex(/^[A-Za-z0-9_-]{1,256}$/);
+const runKey = z.string().regex(/^ordinary:[A-Za-z0-9_.-]{1,256}$/);
+const taskBatch = z.string().regex(/^(all|[A-Za-z0-9_.-]+(?:,[A-Za-z0-9_.-]+)*)$/);
 const access = z.enum(['read-only', 'workspace-write']);
 
 function reply(value: unknown) {
@@ -161,6 +164,8 @@ server.registerTool('opencode_session_send', {
   });
 }));
 
+
+registerOrdinaryTools(server as any, { startProject, synchronizeWriter, projectFileLock, sessionManager, locks });
 server.registerTool('opencode_session_send_bound', {
   description: 'Asynchronously send an implementation or repair batch using the persisted AR Session binding; batchMode selects the deterministic Phase scope, both codespecSnapshotPath and workspaceSnapshotPath are persisted for recovery, and prompt is supplemental review context',
   inputSchema: {

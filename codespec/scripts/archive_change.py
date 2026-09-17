@@ -499,6 +499,8 @@ def plan_archive(root, change_name, require_confirmation=False):
         state = parse_state(state_path)
     except (ValueError, OSError) as e:
         return {"ok": False, "errors": ["状态文件解析失败：{}".format(e)]}
+    if state.get("tier") != "full":
+        errors.append("状态 tier 必须为 full")
     if state.get("phase") != "archive":
         errors.append("phase 须为 archive，实际 {!r}".format(state.get("phase")))
     if state.get("verify_result") != "pass":
@@ -622,19 +624,17 @@ def plan_archive(root, change_name, require_confirmation=False):
     if errors:
         return {"ok": False, "errors": errors}
 
-    # Missing design is allowed only through an explicit tweak opt-out.
+    # Full changes always require a design delta.
     design_md_path = os.path.join(change_dir, "design.md")
     design_incr = {"added": {}, "modified": {}}
     design_required = state.get("design_required", True)
     if type(design_required) is not bool:
         errors.append("design_required 必须为 true 或 false")
-    if not design_required and state.get("tier") != "tweak":
-        errors.append("只有 tweak 可以设置 design_required: false")
-    if not design_required and os.path.exists(design_md_path):
-        errors.append("design_required: false 与已有 design.md 冲突，禁止静默忽略设计")
+    if design_required is False:
+        errors.append("full 变更的 design_required 必须为 true")
     if not os.path.isfile(design_md_path):
         if design_required:
-            errors.append("缺少 design.md：{}（full 或 design_required: true 必须有设计文档）".format(design_md_path))
+            errors.append("缺少 design.md：{}（full 必须有设计文档）".format(design_md_path))
     else:
         with open(design_md_path, encoding="utf-8") as f:
             design_md_text = f.read()
@@ -929,7 +929,9 @@ def capture_baseline(root, change_name):
     state_path = os.path.join(change_dir, ".codespec.yaml")
     if not os.path.isfile(state_path):
         raise FileNotFoundError("缺少状态文件：{}".format(state_path))
-    parse_state(state_path)
+    state = parse_state(state_path)
+    if state.get("tier") != "full":
+        raise ValueError("状态 tier 必须为 full")
     load_config(root)
     spec_path = os.path.join(root, "codespec", "SPEC.md")
     design_path = os.path.join(root, "codespec", "DESIGN.md")

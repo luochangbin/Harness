@@ -1,79 +1,115 @@
-"""Exercise native routing, persistence and CLI separation."""
+"""Regression tests for rejected native and legacy Build Executors."""
 import contextlib
+import hashlib
 import io
 import json
 import os
 import tempfile
 import unittest
-from unittest import mock
 
 import executor_support as es
 
 
-class NativeExecutorTest(unittest.TestCase):
+class RejectedBuildExecutorTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = self.tmp.name
-        self.change = "AR-001-native"
         os.makedirs(os.path.join(self.root, "codespec", ".ar"))
-        with open(os.path.join(self.root, "codespec", ".ar", "config.yaml"), "w", encoding="utf-8") as f:
+        self.config = os.path.join(self.root, "codespec", ".ar", "config.yaml")
+        with open(self.config, "w", encoding="utf-8") as f:
             f.write("language: zh-CN\ndefault_executor: ask\nmodules: []\n")
-        state = os.path.join(self.root, "codespec", "changes", self.change)
-        os.makedirs(state)
-        with open(os.path.join(state, ".ar.yaml"), "w", encoding="utf-8") as f:
-            f.write("phase: build\nworker_executor: null\nworker_session_id: null\n")
+        self.change = "AR-001-native"
+        self.state = os.path.join(self.root, "codespec", "changes", self.change)
+        os.makedirs(self.state)
+        self.ar = os.path.join(self.state, ".ar.yaml")
+        with open(self.ar, "w", encoding="utf-8") as f:
+            f.write("tier: full\nphase: build\nworker_executor: null\nworker_session_id: null\n")
+
+    def digest(self, path):
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
 
     def inspect(self, *args):
         out = io.StringIO()
-        with contextlib.redirect_stdout(out), mock.patch.object(
-                es, "detect_external_executors") as probe:
+        with contextlib.redirect_stdout(out):
             code = es.main(["inspect", "--root", self.root,
                             "--controller-runtime", "codex", *args])
-        probe.assert_not_called()
+        if code != 0:
+            return code, None
+        return code, json.loads(out.getvalue())
+
+    def test_menu_and_constants_only_expose_current_and_opencode(self):
+        self.assertEqual(es.VALID_EXECUTORS, ("ask", "current", "opencode"))
+        self.assertEqual(es.DISPATCH_EXECUTORS, ("current", "opencode"))
+        self.assertEqual(es.EXECUTOR_CHOICES, ("current", "opencode"))
+        code, result = self.inspect()
         self.assertEqual(code, 0)
-        return json.loads(out.getvalue())
+        self.assertEqual(result["choices"], ["current", "opencode"])
 
-    def test_default_roundtrip_and_no_cli_probe(self):
-        es.write_default_executor(self.root, "subagent")
-        self.assertEqual(es.read_default_executor(self.root), "subagent")
-        result = self.inspect("--subagent-available", "--restricted-sandbox")
-        self.assertEqual((result["decision"], result["selected"]), ("use", "subagent"))
-        self.assertEqual(result["available_external"], [])
-
-    def test_missing_native_tools_does_not_host_probe_or_fallback(self):
-        es.write_default_executor(self.root, "subagent")
-        self.assertEqual(self.inspect("--restricted-sandbox")["decision"], "ask")
-        result = self.inspect("--explicit", "subagent", "--restricted-sandbox")
-        self.assertEqual(result["decision"], "error")
-        self.assertIsNone(result["selected"])
-
-    def test_binding_survives_default_change_and_explicit_override(self):
-        sid = "019fab95-15b8-7b70-b535-350de6d02cc8"
-        es.write_worker_session(self.root, self.change, "subagent", sid, agent="DeepSeek")
-        self.assertEqual(es.read_worker_session(self.root, self.change)["id"], sid)
-        es.write_default_executor(self.root, "current")
-        result = self.inspect("--change", self.change, "--subagent-available")
-        self.assertEqual(result["selected"], "subagent")
-        result = self.inspect("--change", self.change, "--explicit", "current")
-        self.assertEqual(result["selected"], "current")
-        self.assertEqual(es.read_worker_session(self.root, self.change)["id"], sid)
-
-    def test_native_cannot_be_launched_as_external_cli(self):
+    def test_legacy_default_is_rejected_without_rewriting_config(self):
+        before = self.digest(self.config)
         with self.assertRaises(ValueError):
-            es.build_worker_argv("subagent", "create", "task", self.root,
-                                 controller_runtime="codex")
+            es.write_default_executor(self.root, "subagent")
+        with self.assertRaises(ValueError):
+            es.write_default_executor(self.root, "claude")
+        self.assertEqual(self.digest(self.config), before)
 
-    def test_first_menu_and_bugfix_default(self):
-        result = self.inspect()
-        self.assertEqual(result["choices"], ["current", "subagent", "opencode"])
-        self.assertEqual(result["decision"], "ask")
-        self.assertEqual(self.inspect("--mode", "bugfix")["selected"], "current")
+    def test_legacy_ar_binding_is_fail_closed_without_rewriting_state(self):
+        with open(self.ar, "w", encoding="utf-8") as f:
+            f.write("tier: full\nphase: build\nworker_executor: subagent\n"
+                    "worker_agent: native-worker\nworker_transport: native\n"
+                    "worker_session_id: native-123\n")
+        before = self.digest(self.ar)
+        with self.assertRaises(ValueError):
+            es.read_worker_session(self.root, self.change)
+        self.assertEqual(self.digest(self.ar), before)
 
-    def test_cli_set_session_accepts_native_binding(self):
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            code = es.main(["set-session", "--root", self.root, "--change", self.change,
-                            "--executor", "subagent", "--session-id", "native-123"])
-        self.assertEqual(code, 0)
-        self.assertEqual(es.read_worker_session(self.root, self.change)["executor"], "subagent")
+    def test_legacy_ordinary_binding_is_fail_closed_without_rewriting_state(self):
+        run_key = "ordinary:native-1"
+        path = os.path.join(self.root, ".codex-workflow", "ordinary-sessions",
+                            "native-1.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"namespace": "ordinary", "run_key": run_key,
+                       "executor": "subagent", "transport": "native",
+                       "agent": "native-worker", "session_id": "native-123"}, f)
+        before = self.digest(path)
+        with self.assertRaises(ValueError):
+            es.read_ordinary_session(self.root, run_key)
+        self.assertEqual(self.digest(path), before)
+
+    def test_cli_flags_reject_legacy_executor_and_transport(self):
+        before = self.digest(self.config)
+        for argv in (
+            ["set-default", "--root", self.root, "--executor", "subagent"],
+            ["set-default", "--root", self.root, "--executor", "claude"],
+            ["set-session", "--root", self.root, "--change", self.change,
+             "--executor", "subagent", "--session-id", "native-123"],
+            ["set-session", "--root", self.root, "--change", self.change,
+             "--executor", "opencode", "--session-id", "ses-1",
+             "--transport", "native"],
+            ["set-ordinary-session", "--root", self.root,
+             "--run-key", "ordinary:native-2", "--executor", "claude",
+             "--session-id", "legacy"],
+        ):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(es.main(argv), 2)
+        self.assertEqual(self.digest(self.config), before)
+
+    def test_build_argv_rejects_subagent_claude_and_current(self):
+        for executor in ("subagent", "claude", "current"):
+            with self.assertRaises(ValueError):
+                es.build_worker_argv(executor, "create", "task", self.root)
+
+    def test_inspect_rejects_legacy_explicit_without_probe_or_write(self):
+        before = self.digest(self.config)
+        for executor in ("subagent", "claude"):
+            code, result = self.inspect("--explicit", executor)
+            self.assertEqual(code, 2)
+            self.assertIsNone(result)
+        self.assertEqual(self.digest(self.config), before)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,15 +1,12 @@
 # -*- coding: utf-8 -*-
-"""codex-workflow 文档契约测试 — 零依赖（unittest + 标准库）。
+"""Static ordinary/full resource contracts, not workflow execution evidence.
 
-锁定轻量执行器改造的文本契约：
-- proposal.md 已删除，SKILL.md / spec.md / eval 场景不再要求或生成它
-- spec.md 承担变更意图（问题/目标/非目标/范围）+ 增量规格
-- tasks 来源为 spec/design
-- 三个快捷 Skill 不复制完整执行器状态机
-
-可直接执行（python test_skill_contract.py -v），不依赖 __init__.py。
+Runtime routing, persistence and failure handling are covered by the executor,
+archive and review-loop suites. These checks protect documented boundaries and
+resource wiring; passing them does not prove an agent follows the instructions.
 """
 import os
+import re
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -17,14 +14,189 @@ SKILL_ROOT = os.path.dirname(HERE)
 TEMPLATES = os.path.join(SKILL_ROOT, "templates")
 SKILL_MD = os.path.join(SKILL_ROOT, "SKILL.md")
 EVAL_SCENARIOS = os.path.join(SKILL_ROOT, "eval", "scenarios")
-SHORTCUTS = os.path.join(os.path.dirname(SKILL_ROOT), "ar-full"), \
-    os.path.join(os.path.dirname(SKILL_ROOT), "ar-tweak"), \
-    os.path.join(os.path.dirname(SKILL_ROOT), "ar-bugfix")
 
 
 def _read(path):
-    with open(path, encoding="utf-8") as f:
-        return f.read()
+    with open(path, encoding="utf-8") as stream:
+        return stream.read()
+
+
+def _reference(name):
+    return _read(os.path.join(SKILL_ROOT, "reference", name))
+
+
+def _section(document, topic):
+    # Resolve by topic rather than obsolete section numbers or exact headings.
+    sections = re.split(r"(?m)^##\s+", document)
+    matches = [part for part in sections[1:] if topic in part.splitlines()[0]]
+    if len(matches) != 1:
+        raise AssertionError("Expected one section for {!r}, got {}".format(topic, len(matches)))
+    return matches[0]
+
+
+class WorkflowContractTest(unittest.TestCase):
+    def setUp(self):
+        self.skill = _read(SKILL_MD)
+        self.ordinary = _reference("ordinary-executor.md")
+        self.full = _reference("full-workflow.md")
+        self.review = _reference("review-repair-loop.md")
+
+    def assert_policy(self, document, *patterns):
+        # Require related obligations in one paragraph, not scattered keywords.
+        paragraphs = re.split(r"\n\s*\n", document)
+        self.assertTrue(any(all(re.search(p, block, re.S) for p in patterns)
+                            for block in paragraphs),
+                        "Missing policy paragraph: {}".format(patterns))
+
+    def test_entrypoints_and_reference_wiring(self):
+        self.assertRegex(self.skill, r"(?m)^name: codex-workflow$")
+        invocations = re.findall(r"(?m)^\$codex-workflow[^\n]*", self.skill)
+        self.assertEqual(invocations, ["$codex-workflow <需求>", "$codex-workflow full <需求>"])
+        for name in ("ordinary-executor.md", "full-workflow.md"):
+            self.assertIn("reference/" + name, self.skill)
+        self.assert_policy(self.skill, "普通", "不会", "新项目", "跨文件", "升级")
+        self.assert_policy(self.skill, "只有.*full", "创建或恢复 AR")
+
+    def test_ordinary_governance_and_active_ar_boundaries(self):
+        ordinary = _section(self.skill, "普通入口")
+        self.assert_policy(ordinary, "不得创建.*治理", "SPEC.md", "DESIGN.md", "changes/", "verification.md")
+        self.assert_policy(ordinary, "不会扫描并恢复已有 AR", "不会被其他 AR", "session")
+        self.assert_policy(ordinary, "允许", "机器状态", "不得.*治理文件", "产品.*文档")
+        self.assertNotIn("--change", "\n".join(re.findall(r"(?m)^python .*", self.ordinary)))
+
+    def test_ordinary_selection_and_git_precondition(self):
+        choice = _section(self.ordinary, "选择 Executor")
+        command = next(line for line in choice.splitlines() if line.startswith("python ") and " inspect " in line)
+        for flag in ("--mode ordinary", "--run-key ordinary:", "--controller-runtime"):
+            self.assertIn(flag, command)
+        self.assert_policy(choice, "显式选择.*ordinary session.*项目默认值.*询问", "ask", "不得静默")
+        self.assert_policy(choice, "snapshot", "Worker", "前先执行")
+        self.assertIn("executor_support.py ensure-git --root", choice)
+
+    def test_build_executor_menu_has_only_current_and_opencode(self):
+        for document in (self.skill, self.full, self.ordinary):
+            self.assertNotRegex(document, r"(?i)(?:current\s*/\s*subagent|subagent\s*/\s*(?:current|opencode)|opencode\s*/\s*subagent)")
+        self.assert_policy(self.skill, "Build", "current.*opencode", "唯一外部 Executor")
+        self.assert_policy(self.full, "Executor 选择", "current.*opencode", "ask", "必须询问")
+        self.assertIn("--explicit current|opencode", self.ordinary)
+        self.assert_policy(self.ordinary, "选择规则", "询问用户", "ask", "必须询问")
+        self.assertNotIn("reference/native-subagent.md", self.skill)
+        self.assertFalse(os.path.isfile(os.path.join(SKILL_ROOT, "reference", "native-subagent.md")))
+
+    def test_ordinary_repair_keeps_executor_identity(self):
+        closure = _section(self.ordinary, "普通实现闭环")
+        self.assert_policy(closure, "独立检查", "治理文件", "相同 executor.*agent.*transport.*session.*task batch")
+
+    def test_ordinary_cli_resume_and_prompt_identity(self):
+        cli = _section(self.ordinary, "OpenCode CLI")
+        self.assert_policy(cli, "create.*不传.*--session-id", "resume.*同一 session ID.*agent", "transport: cli")
+        self.assert_policy(cli, "不存在", "停止", "不.*重建", "不换 transport", "同一 session 修复")
+        prompt = _read(os.path.join(TEMPLATES, "ordinary-worker-prompt.txt"))
+        self.assertEqual(set(re.findall(r"\{\{([A-Z_]+)\}\}", prompt)),
+                         {"PROJECT_ROOT", "RUN_KEY", "TASK_BATCH", "REQUEST",
+                          "NON_GOALS", "ALLOWED_PATHS", "ACCEPTANCE", "TEST_COMMANDS"})
+        self.assert_policy(cli, "渲染", "UTF-8", "REQUEST", "ALLOWED_PATHS",
+                           "ACCEPTANCE", "TEST_COMMANDS", "不得直接.*模板源文件")
+        self.assert_policy(prompt, "Do not create or update", "AR", "verification", "archive")
+
+    def test_ordinary_server_lock_revision_and_snapshots(self):
+        server = _section(self.ordinary, "OpenCode Server")
+        self.assert_policy(server, "修复", "同一 runKey/session")
+        # The revision must come from the Broker, not local arithmetic.
+        self.assertRegex(server, r"(?s)(?:返回|权威).*revision")
+        self.assertIn("expectedRevision", server)
+        self.assertNotRegex(server, r"(?:上次|上轮)[^。\n]*revision[^。\n]*(?:加一|加 1|\+\s*1)")
+        self.assert_policy(server, "写锁", "namespace", "expectedRevision", "snapshot", "停止")
+        self.assert_policy(server, "不接受 AR", "phaseId", "不解析.*design/tasks")
+
+    def test_ordinary_bug_requires_reproduction_before_repair(self):
+        closure = _section(self.ordinary, "普通实现闭环")
+        self.assert_policy(closure, "Bug.*RED.*修复.*GREEN.*回归", "无法自动化", "替代验证")
+
+    def test_full_storage_and_explicit_resume(self):
+        init = _section(self.full, "初始化与恢复")
+        for path in ("codespec/.ar/config.yaml", "codespec/changes/AR-XXX", ".ar.yaml"):
+            self.assertIn(path, init)
+        self.assert_policy(init, "tier.*full", "phase.*open")
+        self.assert_policy(init, "明确.*继续.*才恢复", "新需求", "多个活跃 AR", "已归档.*禁止恢复")
+
+    def test_full_design_phase_mapping_and_handoff(self):
+        design = _section(self.full, "Design")
+        self.assert_policy(design, "Phase 顺序", "每项任务只能属于一个 Phase", "Requirement", "Scenario", "Design")
+        self.assert_policy(design, "Design 和 tasks 均非空", "baseline 成功后", "Build 已就绪", "Build 已开始", "只要求设计.*停")
+        self.assertIn("--capture-baseline", design)
+
+    def test_full_executor_selection_and_no_silent_fallback(self):
+        selection = _section(self.full, "Executor inspect")
+        self.assertIn("--mode ar --change <AR名>", selection)
+        self.assert_policy(selection, "显式 Executor.*绑定 session.*默认值", "bound_executor", "bound_agent")
+        self.assert_policy(selection, "current.*opencode", "ask", "必须询问")
+        self.assert_policy(selection, "ask", "必须询问", "探测成功")
+        self.assert_policy(selection, "SELF_RECURSION_BLOCKED", "宿主复探", "不可用时停止", "不能静默")
+
+    def test_full_binding_switch_requires_authorization_and_terminal_state(self):
+        binding = _section(self.full, "Session 绑定")
+        self.assert_policy(binding, "worker_executor", "worker_transport", "worker_agent", "worker_session_id", "同一", "用户授权", "终态", "审核修复期间禁止切换")
+
+    def test_full_server_creation_order_and_phase_batch(self):
+        server = _section(self.full, "Server Build")
+        sequence = ("ensure-git", "opencode_project_probe", "opencode_session_create",
+                    "worker_session_id", "workspace-snapshot", "opencode_session_send_bound")
+        offsets = [server.index(token) for token in sequence]
+        self.assertEqual(offsets, sorted(offsets))
+        self.assert_policy(server, "Broker", "Design Phase", "确定性计算", "batchMode=repair", "同一 AR binding")
+        self.assert_policy(server, "completed", "独立测试", "通过后才勾选", "WORKFLOW_TIMEOUT", "ABORT_FAILED")
+        self.assert_policy(server, "失败不得静默转 CLI", "fail-closed")
+
+    def test_full_cli_explicit_transport_and_bound_resume(self):
+        cli = _section(self.full, "CLI transport")
+        self.assert_policy(cli, "只有", "opencode_transport: cli", "用户.*明确选择")
+        self.assertIn("--session-id <session-id> --worker-agent <bound-agent>", cli)
+        self.assert_policy(cli, "get-session", "同一 session resume", "UTF-8", "参数数组", "独立验收", "不得用.*最近会话")
+
+    def test_full_snapshot_failure_blocks_state_advancement(self):
+        safety = _section(self.full, "Snapshot、权限")
+        commands = re.findall(r"(?m)^python .*executor_support.py ([\w-]+).*", safety)
+        self.assertEqual(commands, ["snapshot", "check", "workspace-snapshot", "workspace-check"])
+        self.assert_policy(safety, "快照缺失", "停止 Build", "不自动恢复", "不推进 phase", "不勾选")
+        self.assert_policy(safety, "高风险", "opencode_permission_respond", "拒绝.*停止", "不换 Executor/transport")
+
+    def test_full_delivery_verification_and_failure_limit(self):
+        verify = _section(self.full, "Verify、")
+        self.assert_policy(verify, "每个 Phase", "同一条启动命令", "监听/宿主", "Mock.*不能替代", "默认不增加.*E2E")
+        self.assert_policy(verify, "verify_failures", "verify_result: fail", "build", "三次.*第四轮前询问", "独立验证通过后")
+
+    def test_verify_runs_deterministic_delivery_contract_gate(self):
+        # Moving a rule into a reference must not remove the deterministic gate.
+        self.assertIn("delivery_contract_check.py", _section(self.full, "Verify、"))
+
+    def test_full_archive_confirmation_and_retired_session(self):
+        verify = _section(self.full, "Verify、")
+        self.assertLess(verify.index("--dry-run"), verify.index("--apply"))
+        self.assert_policy(verify, "baseline hash", "Requirement", "Design", "verification", "apply.*用户确认")
+        self.assert_policy(verify, "归档后禁止恢复历史 session", "不自动提交或推送")
+
+    def test_review_loop_authorization_lock_and_uncertain_send(self):
+        self.assertIn("reference/review-repair-loop.md", self.full)
+        scope = _section(self.review, "适用范围")
+        self.assert_policy(scope, "full AR", "build.*verify", "worker_transport: server", "用户.*明确授权")
+        self.assert_policy(scope, "只读审核", "不启动修复", "不写循环授权")
+        self.assert_policy(self.review, "LOCK_STALE", "SEND_UNCERTAIN", "不得自动重建 Session", "删锁", "回退 CLI")
+        self.assert_policy(self.review, "同一 AR", "一个控制 Agent", "并发.*停止")
+        self.assert_policy(self.review, "第三次", "deferred", "blocked_dependency")
+
+    def test_worker_profile_and_prompt_boundaries(self):
+        profile = _reference("opencode-worker-profile.md")
+        self.assertIn("opencode_worker_agent", profile)
+        for skill in ("test-driven-development", "systematic-debugging", "verification-before-completion"):
+            self.assertIn(skill, profile)
+        prompt = _read(os.path.join(TEMPLATES, "build-worker-prompt.txt"))
+        self.assertEqual(set(re.findall(r"\{\{([A-Z_]+)\}\}", prompt)),
+                         {"PROJECT_ROOT", "AR_CHANGE", "TASK_BATCH"})
+        self.assert_policy(prompt, "Implement only", "assigned tasks", "current AR phase")
+        self.assert_policy(prompt, "Do not modify", "governance", "AR state", "snapshots", "archive state")
+        self.assert_policy(prompt, "Reuse", "code", "tests", "fixtures")
+        self.assert_policy(profile, "unsupported", "不能记为 0", "worker-runs.jsonl")
 
 
 class ProposalRemovedContractTest(unittest.TestCase):
@@ -48,26 +220,12 @@ class ProposalRemovedContractTest(unittest.TestCase):
                          "ADDED Requirements", "MODIFIED Requirements"):
             self.assertIn(required, spec)
 
-    def test_tasks_source_is_spec_design(self):
-        skill = _read(SKILL_MD)
-        self.assertIn("spec/design", skill)
-        self.assertNotIn("proposal/spec/design", skill)
-
     def test_tasks_after_design_scenario_has_no_proposal_prerequisite(self):
         scenario = _read(os.path.join(EVAL_SCENARIOS, "tasks-after-design.md"))
         self.assertNotIn("proposal", scenario)
 
 
 class SkillRenameContractTest(unittest.TestCase):
-    """Public identity is codex-workflow while existing AR data stays compatible."""
-
-    def test_public_skill_identity_is_codex_workflow(self):
-        skill = _read(SKILL_MD)
-        self.assertIn("name: codex-workflow", skill)
-        self.assertIn("$codex-workflow", skill)
-        self.assertIn("ChatGPT 桌面应用", skill)
-        self.assertNotIn("name: ar-workflow", skill)
-
     def test_active_runtime_docs_use_new_skill_name(self):
         active_files = (
             SKILL_MD,
@@ -81,217 +239,8 @@ class SkillRenameContractTest(unittest.TestCase):
         for path in active_files:
             self.assertNotIn("ar-workflow", _read(path), path)
 
-    def test_existing_ar_storage_contract_is_preserved(self):
-        skill = _read(SKILL_MD)
-        for marker in ("codespec/changes/", ".ar.yaml", "AR-XXX"):
-            self.assertIn(marker, skill)
-
-
-class ShortcutSkillContractTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        missing = [path for path in SHORTCUTS
-                   if not os.path.isfile(os.path.join(path, "SKILL.md"))]
-        if missing:
-            raise unittest.SkipTest(
-                "快捷 Skill 未安装，跳过跨 Skill 契约：{}".format(
-                    ", ".join(os.path.basename(path) for path in missing)))
-
-    def test_shortcuts_delegate_executor_rules_to_main_skill(self):
-        for path in SHORTCUTS:
-            with open(os.path.join(path, "SKILL.md"), encoding="utf-8") as f:
-                content = f.read()
-            self.assertNotIn("resolve_executor", content)
-            self.assertNotIn("executor_support.py", content)
-            self.assertNotIn("worker_executor", content)
-
-    def test_full_shortcut_mentions_default_executor_rule(self):
-        with open(os.path.join(SHORTCUTS[0], "SKILL.md"), encoding="utf-8") as f:
-            content = f.read()
-        self.assertIn("默认", content)
-
-    def test_tweak_shortcut_mentions_default_and_worker_boundary(self):
-        with open(os.path.join(SHORTCUTS[1], "SKILL.md"), encoding="utf-8") as f:
-            content = f.read()
-        self.assertIn("默认", content)
-        self.assertIn("外部 Worker", content)
-
-    def test_bugfix_shortcut_mentions_default_executor_rule(self):
-        with open(os.path.join(SHORTCUTS[2], "SKILL.md"), encoding="utf-8") as f:
-            content = f.read()
-        self.assertIn("默认", content)
-
-
-class ExecutorRoutingContractTest(unittest.TestCase):
-    """Task 5：Build 执行器路由、session 恢复与 Worker 越权文本契约。"""
-
-    def test_first_executor_choice_prefers_buttons_with_numeric_fallback(self):
-        skill = _read(SKILL_MD)
-        build = skill[skill.index("## 阶段 3：build"):skill.index("## 阶段 4：verify")]
-        for marker in (
-                "request_user_input",
-                "当前 (Recommended)",
-                "按展示顺序连续编号",
-                "回复序号",
-                "仍接受执行器名称",
-                "不得仅为显示按钮切换到 Plan 模式",
-                "客户端自动提供的自由输入 Other",
-        ):
-            self.assertIn(marker, build)
-
-    def test_build_flow_tools_present_in_order(self):
-        skill = _read(SKILL_MD)
-        flow = [
-            "executor_support.py inspect",
-            "executor_support.py set-default",
-            "executor_support.py get-session",
-            "worker-run --task-batch",
-        ]
-        idx = -1
-        for m in flow:
-            self.assertIn(m, skill)
-            cur = skill.index(m)
-            self.assertGreater(cur, idx, "主流程工具顺序错乱：{}".format(m))
-            idx = cur
-        contract = skill[skill.index("## Build 控制面与 Worker 契约"):]
-        for m in ("set-session", "snapshot", "check", "worker-argv",
-                  "parse-opencode-session"):
-            self.assertIn(m, contract)
-        self.assertIn("仅保留为诊断/兼容命令", contract)
-
-    def test_inspect_uses_change_for_bound_priority(self):
-        skill = _read(SKILL_MD)
-        self.assertIn("--change <AR名>", skill)
-        self.assertIn("bound_executor", skill)
-
-    def test_explicit_override_passing_documented(self):
-        """P1 修复：SKILL.md 必须说明用户本轮显式指定时给 inspect 追加 --explicit。"""
-        skill = _read(SKILL_MD)
-        self.assertIn("--explicit", skill)
-        self.assertIn("本轮", skill)
-
-    def test_explicit_current_handles_unavailable_bound(self):
-        """P2 修复：显式 current 时，原执行器不可用必须清除失效绑定。"""
-        skill = _read(SKILL_MD)
-        self.assertIn("原执行器已不可用", skill)
-        self.assertIn("失效绑定", skill)
-
-    def test_internal_command_list_is_complete(self):
-        """模板索引列出控制面实际提供的全部内部命令。"""
-        skill = _read(SKILL_MD)
-        line = next(l for l in skill.splitlines() if "executor_support.py（内部命令" in l)
-        for cmd in ("inspect", "set-default", "get-session", "set-session",
-                    "probe", "clear-session", "snapshot", "check",
-                    "worker-argv", "parse-opencode-session",
-                    "parse-opencode-usage"):
-            self.assertIn(cmd, line)
-
-    def test_explicit_resume_flags_documented(self):
-        skill = _read(SKILL_MD)
-        self.assertIn("--resume", skill)
-        self.assertIn("--session", skill)
-        forbid = skill[skill.index("禁止使用"):]
-        self.assertIn("--continue", forbid)
-
-    def test_verify_failure_reuses_same_ar_session(self):
-        skill = _read(SKILL_MD)
-        self.assertIn("同一", skill)
-        self.assertIn("恢复", skill)
-
-    def test_archive_forbids_session_resume(self):
-        skill = _read(SKILL_MD)
-        self.assertIn("禁止恢复", skill)
-
-    def test_control_agent_owns_state_writes(self):
-        skill = _read(SKILL_MD)
-        self.assertIn("勾选", skill)
-
-    def test_worker_codespec_mutation_rule_present(self):
-        skill = _read(SKILL_MD)
-        self.assertIn("不自动恢复", skill)
-
-    def test_error_quick_ref_has_executor_entries(self):
-        skill = _read(SKILL_MD)
-        for marker in ("默认执行器不可用", "Worker 改动 codespec/"):
-            self.assertIn(marker, skill)
-
-    def test_no_fallback_silent_switch_documented(self):
-        skill = _read(SKILL_MD)
-        self.assertIn("禁止静默", skill)
-
-    def test_restricted_sandbox_host_probe_contract(self):
-        skill = _read(SKILL_MD)
-        for marker in (
-                "--restricted-sandbox",
-                "decision = host_probe",
-                "沙箱外复探",
-                "复探时不传 `--restricted-sandbox`",
-        ):
-            self.assertIn(marker, skill)
-
-    def test_denied_host_probe_does_not_silently_fallback(self):
-        skill = _read(SKILL_MD)
-        self.assertIn("使用 temporary current / 停止 Build", skill)
-
-    def test_external_worker_uses_host_permission_boundary(self):
-        skill = _read(SKILL_MD)
-        self.assertIn("外部 Worker 必须通过宿主权限机制启动", skill)
-        self.assertIn("禁止因授权被拒而切换执行器", skill)
-
-    def test_worker_run_owns_utf8_launch_and_bounded_completion_wait(self):
-        skill = _read(SKILL_MD)
-        contract = skill[skill.index("## Build 控制面与 Worker 契约"):]
-        for marker in (
-                "worker-run",
-                "--prompt-file",
-                "不使用 PowerShell 管道",
-                "不使用 .NET ProcessStartInfo",
-                "默认硬时限为 1800 秒",
-                "退出码 7 表示超时且进程树已停止",
-                "同一 ID 使用事件等待接口",
-                "Worker 运行期间不运行",
-                "也不轮询仓库",
-                "worker_exit_code",
-        ):
-            self.assertIn(marker, contract)
-
-    def test_worker_output_parsers_are_internal_to_worker_run(self):
-        skill = _read(SKILL_MD)
-        contract = skill[skill.index("## Build 控制面与 Worker 契约"):]
-        self.assertIn("解析 OpenCode session/usage", contract)
-        self.assertIn("完成 JSON", contract)
-        self.assertIn("不使用 PowerShell 管道", contract)
-        self.assertNotIn("parse-opencode-session --input-file", contract)
-        self.assertNotIn("parse-opencode-usage --input-file", contract)
-
 
 class WorkerProfileContractTest(unittest.TestCase):
-    """OpenCode Worker profile, recursion guard, and cache evidence contract."""
-
-    def test_skill_routes_model_choice_through_opencode_agent(self):
-        skill = _read(SKILL_MD)
-        for marker in ("opencode_worker_agent", "worker_agent",
-                       "--worker-agent", "--controller-runtime"):
-            self.assertIn(marker, skill)
-        self.assertNotIn("default_executor: deepseek", skill)
-
-    def test_worker_prompt_requires_real_skills(self):
-        skill = _read(SKILL_MD)
-        for marker in ("test-driven-development", "systematic-debugging",
-                       "verification-before-completion",
-                       "WORKER_SKILL_UNAVAILABLE"):
-            self.assertIn(marker, skill)
-
-    def test_fixed_worker_prompt_reuses_repository_evidence(self):
-        prompt = _read(os.path.join(TEMPLATES, "build-worker-prompt.txt"))
-        for marker in (
-                "{{AR_CHANGE}}",
-                "优先复用仓库内现有代码、测试夹具和已采集证据",
-                "不得在仓库外创建临时工程、源文件或测试夹具",
-                "WORKER_EXTERNAL_PATH_REQUIRED",
-        ):
-            self.assertIn(marker, prompt)
-
     def test_opencode_worker_template_is_deny_by_default(self):
         path = os.path.join(TEMPLATES, "opencode", "ar-worker-deepseek.md")
         profile = _read(path)
@@ -302,13 +251,6 @@ class WorkerProfileContractTest(unittest.TestCase):
             self.assertIn('"{}": "allow"'.format(skill_id), profile)
         self.assertIn("task: deny", profile)
         self.assertIn("external_directory: deny", profile)
-
-    def test_self_runtime_and_cache_telemetry_are_documented(self):
-        skill = _read(SKILL_MD)
-        self.assertIn("SELF_RECURSION_BLOCKED", skill)
-        self.assertIn("parse-opencode-usage", skill)
-        self.assertIn("worker-runs.jsonl", skill)
-        self.assertIn("unsupported", skill)
 
     def test_new_behavior_scenarios_exist(self):
         for name in ("opencode-worker-agent-binding.md",
@@ -322,17 +264,6 @@ class WorkerProfileContractTest(unittest.TestCase):
 
 
 class ExplicitE2EOnlyContractTest(unittest.TestCase):
-    """AR 默认不新增或强制 E2E，只执行明确声明的验收范围。"""
-
-    def test_skill_does_not_infer_e2e(self):
-        skill = _read(SKILL_MD)
-        for marker in (
-                "默认不新增、推导或强制 E2E",
-                "当前需求与 spec 已明确声明的层级",
-                "未纳入范围的 E2E",
-        ):
-            self.assertIn(marker, skill)
-
     def test_design_and_verification_keep_e2e_out_of_default_scope(self):
         design = _read(os.path.join(TEMPLATES, "design.md"))
         verification = _read(os.path.join(TEMPLATES, "verification.md"))
@@ -345,18 +276,6 @@ class ExplicitE2EOnlyContractTest(unittest.TestCase):
 
 
 class OutcomeAcceptanceContractTest(unittest.TestCase):
-    """组件测试通过不能替代用户请求的可运行交付和核心结果。"""
-
-    def test_skill_separates_e2e_scope_from_required_delivery_outcome(self):
-        skill = _read(SKILL_MD)
-        for marker in (
-                "可运行交付契约",
-                "安全失败不是功能通过",
-                "保持 `phase: build`",
-                "不得用未要求 E2E 作为豁免",
-        ):
-            self.assertIn(marker, skill)
-
     def test_verification_template_requires_delivery_and_user_outcome_rows(self):
         verification = _read(os.path.join(TEMPLATES, "verification.md"))
         for marker in (
@@ -393,60 +312,14 @@ class OutcomeAcceptanceContractTest(unittest.TestCase):
             EVAL_SCENARIOS, "delivery-command-consistency.md")
         self.assertTrue(os.path.isfile(scenario), scenario)
 
-    def test_verify_runs_deterministic_delivery_contract_gate(self):
-        skill = _read(SKILL_MD)
-        self.assertIn("delivery_contract_check.py", skill)
-
 
 class DesignBuildHandoffContractTest(unittest.TestCase):
-    """Design 完成后必须明确告知 Build 是已就绪、执行中还是等待授权。"""
-
-    def test_build_phase_state_is_not_presented_as_running(self):
-        skill = _read(SKILL_MD)
-        for marker in (
-                "`phase: build` 表示 Build 已就绪",
-                "不表示实现正在执行",
-                "设计已完成，Build 已就绪但尚未开始",
-        ):
-            self.assertIn(marker, skill)
-
-    def test_design_exit_has_user_visible_handoff(self):
-        skill = _read(SKILL_MD)
-        design_phase = skill[skill.index("## 阶段 2：design"):skill.index("## 阶段 3：build")]
-        for marker in (
-                "用户可见的阶段交接消息",
-                "是否现在开始 Build",
-                "明确授权继续实现",
-        ):
-            self.assertIn(marker, design_phase)
-
     def test_handoff_pressure_scenario_exists(self):
         scenario = os.path.join(EVAL_SCENARIOS, "design-build-handoff.md")
         self.assertTrue(os.path.isfile(scenario), scenario)
 
 
 class WorkerBatchContractTest(unittest.TestCase):
-    """Build 只按设计声明的实施 Phase 分批，并复用同一 session。"""
-
-    def test_build_batches_follow_declared_implementation_phases_only(self):
-        skill = _read(SKILL_MD)
-        build = skill[skill.index("## 阶段 3：build"):skill.index("## 阶段 4：verify")]
-        for marker in (
-                "实施 Phase",
-                "design.md",
-                "声明顺序",
-                "每个 Phase 独立验收",
-                "同一 Session",
-                "单一隐式 Phase",
-        ):
-            self.assertIn(marker, build)
-        for obsolete in (
-                "未完成任务 >8",
-                "未完成任务 ≤8",
-                "3～8 个未完成任务",
-        ):
-            self.assertNotIn(obsolete, build)
-
     def test_design_and_tasks_templates_define_phase_mapping(self):
         design = _read(os.path.join(TEMPLATES, "design.md"))
         tasks = _read(os.path.join(TEMPLATES, "tasks.md"))
@@ -455,25 +328,8 @@ class WorkerBatchContractTest(unittest.TestCase):
         for marker in ("Phase 1", "design.md", "一个实施 Phase"):
             self.assertIn(marker, tasks)
 
-    def test_worker_prompt_has_batch_slot(self):
-        prompt = _read(os.path.join(TEMPLATES, "build-worker-prompt.txt"))
-        self.assertIn("{{TASK_BATCH}}", prompt)
-        self.assertIn("只实现本批次", prompt)
-
 
 class ReviewLoopContractTest(unittest.TestCase):
-    """可选审核-修复循环的最小契约，并锁定 Oracle 已从源 Skill 移除。"""
-
-    def test_skill_exposes_optional_review_loop(self):
-        skill = _read(SKILL_MD)
-        for marker in (
-                "审核-修复自动循环",
-                "reference/review-repair-loop.md",
-                "review_loop_support.py",
-                "逐问题三次暂缓",
-        ):
-            self.assertIn(marker, skill)
-
     def test_review_loop_reference_and_script_exist(self):
         self.assertTrue(os.path.isfile(os.path.join(SKILL_ROOT, "reference", "review-repair-loop.md")))
         self.assertTrue(os.path.isfile(os.path.join(HERE, "review_loop_support.py")))

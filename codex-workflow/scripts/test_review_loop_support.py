@@ -103,7 +103,7 @@ class ReviewLoopTest(unittest.TestCase):
     def test_begin_rejects_inapplicable_ar(self):
         for overrides in ({"archived": "true"}, {"worker_transport": "cli"},
                           {"worker_executor": "subagent"}, {"phase": "design"},
-                          {"tier": "bugfix"}):
+                          {"tier": "tweak"}, {"tier": "bugfix"}):
             self.write_state(**overrides)
             code, _ = self.run_loop("begin", "--loop-id", "L1")
             self.assertEqual(code, 2, overrides)

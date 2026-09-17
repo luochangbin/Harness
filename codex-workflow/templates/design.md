@@ -12,7 +12,6 @@
 - 交付访问入口：<用户实际使用的精确 URL、可执行文件或 CLI 入口；library/document 写 N/A>
 - 监听/宿主约束：<service 的明确 host:port，不使用 localhost；其他类型写 N/A>
 - 交付运行模式：keep-running / start-on-demand（library/document 写 N/A）
-- 视觉验收：required / n/a（涉及可见界面时必须为 required）
 - 最小产物：<必须产出的文件/入口>
 - 用户可观察结果：<核心场景的可观察结果>
 - 最低证据层级：<单元/组件/集成/端到端 及要求的证据层级>

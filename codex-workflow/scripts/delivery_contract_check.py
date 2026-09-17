@@ -74,7 +74,6 @@ def _listener(value):
 def check(design_text, verification_text):
     design = _fields(_section(design_text, "Delivery Contract"))
     evidence = _fields(_section(verification_text, "Delivery Evidence"))
-    visual = _fields(_section(verification_text, "Visual Evidence（仅可见界面需要）"))
     errors = []
 
     def add(code, message):
@@ -114,26 +113,6 @@ def check(design_text, verification_text):
         if _missing(actual[key]):
             add("MISSING_EVIDENCE_FIELD", label + " 缺失或仍是占位符")
 
-    visual_contract = design.get("视觉验收", "")
-    visual_need = visual.get("是否需要视觉验证", "")
-    visual_result = visual.get("真实图像查看结果", "")
-    if not visual_contract:
-        add("MISSING_VISUAL_CONTRACT", "可运行交付必须明确声明视觉验收 required 或 n/a")
-    elif visual_contract not in {"required", "n/a"}:
-        add("INVALID_VISUAL_CONTRACT", "视觉验收字段必须是 required 或 n/a")
-    if delivery_type == "desktop-app" and visual_contract != "required":
-        add("VISUAL_CONTRACT_REQUIRED", "desktop-app 必须声明视觉验收 required")
-    if visual_contract == "required" and visual_need != "yes":
-        add("MISSING_VISUAL_EVIDENCE", "设计要求视觉验收时，验证记录必须声明 yes")
-    if visual_contract == "n/a" and visual_need == "yes":
-        add("VISUAL_REQUIREMENT_MISMATCH", "设计未要求视觉验收时，验证记录不得声明 yes")
-    if visual_need and visual_need not in {"yes", "no"}:
-        add("INVALID_VISUAL_REQUIREMENT", "视觉验证字段必须是 yes 或 no")
-    if visual_need == "yes" and visual_result != "PASS":
-        add("VISUAL_NOT_VERIFIED", "要求视觉验证时，真实图像查看结果必须是 PASS")
-    visual_path = visual.get("实际查看工具与截图路径", "")
-    if visual_need == "yes" and (_missing(visual_path) or visual_path.strip().upper() in {"N/A", "NA"}):
-        add("MISSING_VISUAL_EVIDENCE", "要求视觉验证时必须记录真实查看工具与截图路径")
     if delivery_type == "service":
         if _missing(expected["listener"]):
             add("MISSING_DELIVERY_FIELD", "监听/宿主约束缺失或仍是占位符")

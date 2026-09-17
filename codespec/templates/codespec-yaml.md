@@ -3,7 +3,7 @@ codespec: codespec-001
 tier: full
 phase: open
 modules: [auth]
-# Only tweak can explicitly opt out. Missing means true.
+# Full changes always require design.md. Ordinary requests do not create state files.
 design_required: true
 verify_result: pending
 verify_failures: 0

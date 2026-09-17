@@ -373,8 +373,8 @@ def _unique_ids(raw, label):
 
 
 def _applicability(binding):
-    if binding["tier"] not in ("full", "tweak"):
-        raise ValueError("审核-修复循环仅适用于 full/tweak AR：tier={!r}".format(binding["tier"]))
+    if binding["tier"] != "full":
+        raise ValueError("审核-修复循环仅适用于 full AR：tier={!r}".format(binding["tier"]))
     if binding["phase"] not in ("build", "verify"):
         raise ValueError("审核-修复循环要求 phase 为 build/verify：{!r}".format(binding["phase"]))
     if binding["archived"]:

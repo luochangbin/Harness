@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PermissionBridge, ProjectWriteLock } from '../dist/permissions.js';
+import { PermissionBridge, ProjectWriteLock, automaticPermissionResponse } from '../dist/permissions.js';
 
 test('permission response is project scoped', () => {
   const bridge = new PermissionBridge(); const request = bridge.add({ id: 'p1', projectKey: 'a', sessionId: 's1', permission: 'write' });
@@ -59,4 +59,42 @@ test('sensitive read targets cannot be permanently approved', () => {
   const bridge = new PermissionBridge();
   const request = bridge.add({ id: 'p-env', projectKey: 'a', sessionId: 's1', permission: 'read', type: 'read', target: '.env' });
   assert.deepEqual(request.allowedResponses, ['once', 'reject']);
+});
+
+test('automatically allows a safe read outside the project once', () => {
+  assert.equal(automaticPermissionResponse({
+    permission: 'read', type: 'read', target: 'C:\\shared\\README.md', outside: true
+  }), 'once');
+});
+
+test('does not automatically allow external-directory access without a read operation', () => {
+  assert.equal(automaticPermissionResponse({
+    permission: 'external_directory', type: 'external_directory', operation: 'edit',
+    target: 'C:\\shared\\README.md', outside: true
+  }), null);
+  assert.equal(automaticPermissionResponse({
+    permission: 'external_directory', type: 'external_directory',
+    target: 'C:\\shared\\README.md', outside: true
+  }), null);
+});
+
+test('automatically allows project dependency installation but not global or chained shell commands', () => {
+  assert.equal(automaticPermissionResponse({
+    permission: 'bash', type: 'bash', target: 'npm install lodash'
+  }), 'once');
+  assert.equal(automaticPermissionResponse({
+    permission: 'bash', type: 'bash', target: 'npm install -g evil'
+  }), null);
+  assert.equal(automaticPermissionResponse({
+    permission: 'bash', type: 'bash', target: 'npm install lodash && git push'
+  }), null);
+});
+
+test('automatically allows HTTP(S) fetches but keeps arbitrary network permissions controlled', () => {
+  assert.equal(automaticPermissionResponse({
+    permission: 'webfetch', type: 'webfetch', target: 'https://example.com/archive.tgz'
+  }), 'once');
+  assert.equal(automaticPermissionResponse({
+    permission: 'network', type: 'network', target: 'https://example.com/archive.tgz'
+  }), null);
 });

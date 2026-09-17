@@ -9,6 +9,7 @@ export type PermissionRequest = {
   permission: string;
   type?: string;
   target?: string;
+  operation?: string;
   outside?: boolean;
   unknownScope?: boolean;
   alwaysOutside?: boolean;
@@ -19,6 +20,27 @@ export type PermissionRequest = {
 
 const SAFE_ALWAYS = new Set(['read', 'file.read']);
 const HIGH_RISK = /api[_ -]?key|password|secret|token|credential|external|outside|system|network|install|exec|shell|bash|sudo|root|(?:^|[\/\\])(?:\.env(?:\..*)?|\.npmrc|\.pypirc|id_(?:rsa|ed25519)|[^\/\\]*\.(?:pem|key|p12|pfx))$/i;
+const SAFE_READ_TYPES = new Set(['read', 'file.read']);
+const DEPENDENCY_INSTALL = /^(npm|pnpm|yarn|bun)\s+(?:i|install|add)(?:\s|$)/i;
+const SHELL_META = /[;&|<>`$()]/;
+
+export function automaticPermissionResponse(item: Pick<PermissionRequest, 'permission' | 'type' | 'target' | 'operation' | 'outside' | 'unknownScope' | 'alwaysOutside' | 'alwaysUnknown'>): PermissionResponse | null {
+  const permission = item.permission.toLowerCase();
+  const type = (item.type ?? item.permission).toLowerCase();
+  const operation = item.operation?.toLowerCase();
+  const target = item.target?.trim() ?? '';
+  const scopeSafe = !item.unknownScope && !HIGH_RISK.test(target);
+
+  if (scopeSafe && item.outside && (SAFE_READ_TYPES.has(permission) || SAFE_READ_TYPES.has(type) ||
+      (permission === 'external_directory' && operation === 'read'))) return target ? 'once' : null;
+
+  if (!item.outside && permission === 'bash' && target && !SHELL_META.test(target) &&
+      !/(^|\s)(?:-g|--global|--prefix|\.\.[\\/]|[A-Za-z]:[\\/]|~[\\/])(?:\s|$)/i.test(target) &&
+      DEPENDENCY_INSTALL.test(target)) return 'once';
+
+  if ((permission === 'webfetch' || type === 'webfetch') && /^https?:\/\//i.test(target)) return 'once';
+  return null;
+}
 
 function canAlways(item: Pick<PermissionRequest, 'permission' | 'type' | 'target' | 'outside' | 'unknownScope' | 'alwaysOutside' | 'alwaysUnknown' | 'alwaysTargets'>) {
   const type = (item.type ?? item.permission).toLowerCase();
@@ -38,7 +60,7 @@ export class PermissionBridge {
   private present(item: PermissionRequest) {
     return {
       id: item.id, projectKey: item.projectKey, sessionId: item.sessionId, permission: item.permission,
-      type: item.type ?? null, target: item.target ?? null, outside: item.outside ?? false,
+      type: item.type ?? null, target: item.target ?? null, operation: item.operation ?? null, outside: item.outside ?? false,
       unknownScope: item.unknownScope ?? false, alwaysOutside: item.alwaysOutside ?? false,
       alwaysUnknown: item.alwaysUnknown ?? false, alwaysTargets: item.alwaysTargets ?? null,
       allowedResponses: allowedResponses(item), status: item.status

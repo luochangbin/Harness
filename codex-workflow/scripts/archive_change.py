@@ -176,38 +176,23 @@ def _validate_session_fields(fields):
         return
     if executor is None or session_id is None:
         raise ValueError("worker_executor/worker_session_id 必须成对出现")
-    if executor not in ("subagent", "claude", "opencode"):
+    if executor not in ("opencode",):
         raise ValueError("非法 worker_executor：{}".format(executor))
     if transport is None:
-        transport = "native" if executor == "subagent" else "cli"
-    if transport not in ("server", "cli", "native"):
+        transport = "cli"
+    if transport not in ("server", "cli"):
         raise ValueError("非法 worker_transport：{}".format(transport))
-    if executor == "subagent" and transport != "native":
-        raise ValueError("subagent 必须使用 native transport")
-    if executor == "opencode" and transport not in ("server", "cli"):
-        raise ValueError("opencode 必须使用 server 或 cli transport")
-    if executor == "claude" and transport != "cli":
-        raise ValueError("claude 只能使用 cli transport")
     if agent is not None:
-        if executor not in ("opencode", "subagent"):
-            raise ValueError("worker_agent 只适用于 opencode/subagent")
+        if executor != "opencode":
+            raise ValueError("worker_agent 只适用于 opencode")
         if not isinstance(agent, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", agent):
             raise ValueError("worker_agent 非法")
     if not isinstance(session_id, str) or not session_id:
         raise ValueError("worker_session_id 为空")
     if any(ord(c) < 32 or ord(c) == 127 for c in session_id):
         raise ValueError("worker_session_id 含控制字符")
-    if executor == "claude":
-        import uuid
-        try:
-            norm = str(uuid.UUID(session_id))
-        except ValueError:
-            raise ValueError("claude session id 必须是 UUID")
-        if norm != session_id and norm.lower() != session_id.lower():
-            raise ValueError("claude session id 非规范形式")
-    else:
-        if not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", session_id):
-            raise ValueError("{} session id 非法".format(executor))
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", session_id):
+        raise ValueError("opencode session id 非法")
 
 
 def load_config(root):
@@ -526,6 +511,8 @@ def plan_archive(root, change_name, require_confirmation=False):
         state = parse_state(state_path)
     except (ValueError, OSError) as e:
         return {"ok": False, "errors": ["状态文件解析失败：{}".format(e)]}
+    if state.get("tier") != "full":
+        errors.append("tier 须为 full")
     if state.get("phase") != "archive":
         errors.append("phase 须为 archive，实际 {!r}".format(state.get("phase")))
     if state.get("verify_result") != "pass":
@@ -681,12 +668,12 @@ def plan_archive(root, change_name, require_confirmation=False):
         return {"ok": False, "errors": errors}
 
     # 5.5 增量 design.md 解析与约束校验
-    #    full/tweak 的 design 阶段必须生成非空 design.md：缺失或空白 → 拒绝；
+    #    full AR 的 design 阶段必须生成非空 design.md：缺失或空白 → 拒绝；
     #    存在但无合法 ADDED/MODIFIED Design delta → 拒绝并提供迁移示例。
     design_md_path = os.path.join(change_dir, "design.md")
     design_incr = {"added": {}, "modified": {}}
     if not os.path.isfile(design_md_path):
-        errors.append("缺少 design.md：{}（full/tweak 的 design 阶段必须生成非空设计文档）".format(design_md_path))
+        errors.append("缺少 design.md：{}（full AR 的 design 阶段必须生成非空设计文档）".format(design_md_path))
     else:
         with open(design_md_path, encoding="utf-8") as f:
             design_md_text = f.read()
@@ -950,6 +937,9 @@ def capture_baseline(root, change_name):
     state_path = os.path.join(change_dir, ".ar.yaml")
     if not os.path.isfile(state_path):
         raise FileNotFoundError("缺少状态文件：{}".format(state_path))
+    state = parse_state(state_path)
+    if state.get("tier") != "full":
+        raise ValueError("tier 须为 full")
     spec_path = os.path.join(root, "codespec", "SPEC.md")
     design_path = os.path.join(root, "codespec", "DESIGN.md")
     spec_hash = sha256_file(spec_path)

@@ -11,7 +11,7 @@
 
 ## 必须行为
 - 执行 `executor_support.py inspect`（decision = ask）
-- 展示 OpenCode / Claude Code / 其他 Agent / 当前 Agent，不预扫描所有 CLI
+- 展示 OpenCode / 当前 Agent，不预扫描所有 CLI
 - 用户选择 current 后才写 `default_executor: current` 并由当前 agent执行
 - `.ar.yaml` 的 worker_executor/worker_session_id 保持 null（不写 session）
 

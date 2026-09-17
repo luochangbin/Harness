@@ -20,7 +20,7 @@ OpenCode Worker 已启动，预计运行数分钟；调用设置了 1800 秒硬�
 - 等待超过交互更新时间时只向用户发送简短进度消息，再继续等待同一进程。
 - 收到唯一完成 JSON 后才执行一次 codespec 检查、diff 检查与独立测试。
 - 达到硬时限时由 helper 停止精确 Worker 进程树并返回退出码 7；控制 agent 报告超时、部分改动与可恢复 session，不自动重试或判定完成。
-- 用户要求原生完成通知时，解释应选择 subagent；不在 OpenCode 路径伪造回调。
+- 用户要求原生完成通知时，说明当前 Build 只支持 current 或 OpenCode；不伪造 OpenCode 回调。
 
 ## 禁止行为
 
