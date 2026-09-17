@@ -12,6 +12,7 @@ const readJson = async (relativePath) =>
 const portableManifest = await readJson('plugin/codex-workflow/plugin.json');
 const portableMcp = await readJson('plugin/codex-workflow/mcp.json');
 const compatibilityManifest = await readJson('plugin/codex-workflow/.codex-plugin/plugin.json');
+const packagedCompatibilityManifest = await readJson('dist/codex-workflow-plugin/.codex-plugin/plugin.json');
 const buildScript = await readFile(resolve(root, 'scripts/build-codex-workflow-plugin.mjs'), 'utf8');
 
 assert.equal(
@@ -23,6 +24,10 @@ assert.equal(portableManifest.extensions?.['com.openai']?.interface?.displayName
 assert.equal(portableManifest.skills, undefined, 'portable manifest must use fixed component discovery');
 assert.equal(portableManifest.mcpServers, undefined, 'portable manifest must use fixed component discovery');
 assert.equal(portableManifest.interface, undefined, 'OpenAI metadata must be under extensions.com.openai');
+assert.equal(compatibilityManifest.name, portableManifest.name, 'source manifests must use the same plugin name');
+assert.equal(compatibilityManifest.version, portableManifest.version, 'source manifests must use the same plugin version');
+assert.equal(packagedCompatibilityManifest.name, portableManifest.name, 'packaged compatibility manifest must use the public plugin name');
+assert.equal(packagedCompatibilityManifest.version, portableManifest.version, 'packaged compatibility manifest must use the public plugin version');
 
 assert.equal(
   portableMcp.$schema,
