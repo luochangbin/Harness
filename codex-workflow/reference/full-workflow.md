@@ -4,7 +4,7 @@
 
 ## 1. Full 初始化与恢复
 
-Full 的初始化顺序是：确认目标、非目标、范围和验收 → 确认仓库根 → 检查 Git → 创建或读取 `codespec/.ar/config.yaml` → 创建递增的 `codespec/changes/AR-XXX-<name>/` → 写入 `.ar.yaml`、`spec.md`。`.ar.yaml` 的 `tier` 必须为 `full`，phase 从 `open` 开始。没有完整治理文件时，不能把其他运行时状态当成 AR 恢复依据。
+Full 的初始化顺序是：确认目标、非目标、范围和验收 → 确认仓库根 → 检查 Git → 创建或读取 `codespec/.codespec/config.yaml` → 创建递增的 `codespec/changes/AR-XXX-<name>/` → 写入 `.ar.yaml`、`spec.md`。`.ar.yaml` 的 `tier` 必须为 `full`，phase 从 `open` 开始。没有完整治理文件时，不能把其他运行时状态当成 AR 恢复依据。
 
 Full 恢复只扫描 `codespec/changes/*/.ar.yaml`，读取 phase、verify 状态、Executor 绑定和 session 状态。新请求不会自动抢占无关的活跃 AR：用户明确说继续某个 AR 时才恢复；用户明确说明是新需求时创建新的 AR；意图不明时询问，不猜测、不借用其他 AR 的设计或 session。多个活跃 AR 时让用户选择；已归档 AR 禁止恢复或调用历史 session。Full 不因项目是新项目而由普通入口触发。
 

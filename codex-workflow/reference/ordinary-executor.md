@@ -12,6 +12,8 @@ python <skill 基目录>/scripts/executor_support.py inspect --root <仓库根> 
 
 用户明确指定 Executor 时追加 `--explicit current|opencode`；受限环境追加 `--restricted-sandbox`。`--run-key` 与 `--change` 互斥；ordinary inspect 不读取 AR binding。
 
+项目执行器配置唯一位于 `codespec/.codespec/config.yaml`。普通 inspect 缺配置时原子创建最小配置 `default_executor: ask`，只建立必要目录和该配置文件；已有新路径配置保持不变。旧 AR 配置完全忽略，不读取、不迁移。Full 也从新路径读配置。
+
 选择规则：显式选择 → ordinary session 绑定 → 项目默认值 → 询问用户。没有默认值或默认值为 `ask` 时必须询问；不得静默使用 current。已有绑定时优先恢复其 executor、agent 和 transport。Executor 不可用、权限不确定或 session 状态损坏时停止并报告。
 
 普通空仓库在任何 snapshot、Worker 启动或 Server 调用前先执行：
@@ -36,6 +38,18 @@ python <skill 基目录>/scripts/executor_support.py get-ordinary-session --root
 python <skill 基目录>/scripts/executor_support.py set-ordinary-session --root <仓库根> --run-key ordinary:<run-key> --executor opencode --session-id <session-id> [--worker-agent <agent>] [--transport <server|cli>] [--task-batch <all|任务ID逗号列表>]
 python <skill 基目录>/scripts/executor_support.py clear-ordinary-session --root <仓库根> --run-key ordinary:<run-key>
 ```
+
+### 采用用户指定的既有 OpenCode session
+
+用户明确给出 OpenCode session ID 时，只能采用该 session，不可静默创建新 session 或改走 Server。通过 CLI 在项目根下查询 OpenCode session 列表并校验精确 ID 与目录：
+
+```text
+python <skill 基目录>/scripts/executor_support.py adopt-ordinary-session --root <仓库根> --run-key ordinary:<run-key> --session-id <用户指定的session-id>
+```
+
+命令调用 `opencode session list --format json --max-count 10000`，将列表中的 `directory` 与当前项目根分别解析为规范 root 后比较；只有 ID 存在且 root 相同时，才写入本地 `executor: opencode`、`transport: cli` 的 ordinary binding。写入对同一 runKey 使用原子 create-if-absent：并发 adoption 仅一个成功，竞争者以冲突失败并保留成功者的 binding。runKey 已有 binding 时拒绝覆盖并保持原 binding 不变。缺失 ID、项目不匹配、JSON 无效或 CLI 失败时拒绝采用且不写 binding。MCP Server 不导入外部 session；用户指定 ID 的恢复必须继续走 CLI。
+
+Session list 不返回 agent，因此 adoption binding 的 agent 留空。后续 `worker-run --action resume` 使用 binding 中的原 session ID，并省略 `--agent`，让 OpenCode 从 session 继承 agent。首次 create 的参数和约束不变。
 
 ## 3. OpenCode CLI
 

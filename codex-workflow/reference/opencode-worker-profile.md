@@ -8,7 +8,7 @@
 
 1. 将 `templates/opencode/ar-worker-deepseek.md` 复制到 OpenCode 的用户级 `~/.config/opencode/agents/ar-worker-deepseek.md`，或仓库级 `.opencode/agents/ar-worker-deepseek.md`。
 2. 确认 OpenCode 中能加载 `test-driven-development`、`systematic-debugging`、`verification-before-completion`。
-3. 在 `codespec/.ar/config.yaml` 配置：
+3. 在 `codespec/.codespec/config.yaml` 配置：
 
    ```yaml
    default_executor: opencode

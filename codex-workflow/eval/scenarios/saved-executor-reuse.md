@@ -1,7 +1,7 @@
 # 场景：已保存默认执行器复用
 
 ## 仓库状态
-已初始化 AR 仓库；active AR `AR-012-saved-exec`（phase: build，tasks.md 存在非空）；`codespec/.ar/config.yaml` 已含 `default_executor: opencode`（视为已确认）；测试 PATH 前置假 OpenCode（探针返回 0）；executor_support.py 可用。
+已初始化 AR 仓库；active AR `AR-012-saved-exec`（phase: build，tasks.md 存在非空）；`codespec/.codespec/config.yaml` 已含 `default_executor: opencode`（视为已确认）；测试 PATH 前置假 OpenCode（探针返回 0）；executor_support.py 可用。
 
 ## 用户输入
 "继续 Build"

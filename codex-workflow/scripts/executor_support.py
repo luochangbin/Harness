@@ -3,7 +3,7 @@
 """AR 工作流执行器辅助工具 — Skill 内部确定性辅助脚本。
 
 职责（非独立产品 CLI，不调用 LLM、不维护跨 AR 会话池）：
-  1. 项目级默认执行器（codespec/.ar/config.yaml 的 default_executor）读写
+  1. 项目级默认执行器（codespec/.codespec/config.yaml 的 default_executor）读写
   2. 外部 OpenCode CLI 可启动性探针
   3. 执行器决策状态机（显式 > 绑定 session > 项目默认 > 首次选择规则）
   4. 单 AR Worker session 元数据（.ar.yaml 的 worker_executor/worker_agent/worker_session_id）
@@ -30,7 +30,7 @@ VALID_EXECUTORS = ("ask", "current", "opencode")
 DISPATCH_EXECUTORS = ("current", "opencode")
 EXECUTOR_CHOICES = ("current", "opencode")
 VALID_CONTROLLER_RUNTIMES = ("codex", "claude", "opencode")
-CONFIG_PATH = os.path.join("codespec", ".ar", "config.yaml")
+CONFIG_PATH = os.path.join("codespec", ".codespec", "config.yaml")
 VALID_TRANSPORTS = ("null", "server", "cli")
 CHANGE_NAME_RE = re.compile(r"^[A-Za-z0-9-]+$")
 ORDINARY_RUN_KEY_RE = re.compile(r"^ordinary:[A-Za-z0-9_.-]{1,256}$")
@@ -43,6 +43,33 @@ DEFAULT_WORKER_TIMEOUT_SECONDS = 1800
 
 def _config_file(root):
     return os.path.join(root, CONFIG_PATH)
+
+
+def ensure_ordinary_config(root):
+    """Atomically create the minimal ordinary config without touching AR artifacts."""
+    path = _config_file(root)
+    if os.path.isfile(path):
+        return path
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=directory, prefix=".config-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+            stream.write("default_executor: ask\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            # A hard link publishes the complete file atomically and never
+            # overwrites a config concurrently created by another inspect.
+            os.link(temporary, path)
+        except FileExistsError:
+            pass
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+    return path
 
 
 def ensure_git_repository(root, run=subprocess.run):
@@ -620,7 +647,8 @@ def read_ordinary_session(root, run_key):
 
 
 def write_ordinary_session(root, run_key, executor, session_id,
-                           agent=None, transport=None, task_batch="all"):
+                           agent=None, transport=None, task_batch="all",
+                           create_if_absent=False):
     _, run_key = _ordinary_run_key_parts(run_key)
     if executor not in ("opencode",):
         raise ValueError("普通 machine session executor 非法：{}".format(executor))
@@ -639,13 +667,22 @@ def write_ordinary_session(root, run_key, executor, session_id,
                        "transport": transport, "task_batch": task_batch},
                       f, ensure_ascii=False, indent=2)
             f.write("\n")
-        os.replace(tmp, path)
-    except BaseException:
+            f.flush()
+            os.fsync(f.fileno())
+        if create_if_absent:
+            try:
+                os.link(tmp, path)
+            except FileExistsError:
+                raise ValueError(
+                    "普通 runKey adoption 绑定冲突，已有 session 保持不变：{}".format(
+                        run_key))
+        else:
+            os.replace(tmp, path)
+    finally:
         try:
             os.unlink(tmp)
-        except OSError:
+        except FileNotFoundError:
             pass
-        raise
 
 
 def clear_ordinary_session(root, run_key):
@@ -1169,7 +1206,7 @@ def main(argv=None):
             pass
     args = argv if argv is not None else sys.argv[1:]
     if not args:
-        return _fail(2, "缺少子命令：inspect | probe | set-default | ensure-git | get-session | set-session | clear-session | get-ordinary-session | set-ordinary-session | clear-ordinary-session | snapshot | check | workspace-snapshot | workspace-check | worker-argv | worker-run | parse-opencode-session | parse-opencode-usage")
+        return _fail(2, "缺少子命令：inspect | probe | set-default | ensure-git | get-session | set-session | clear-session | get-ordinary-session | set-ordinary-session | adopt-ordinary-session | clear-ordinary-session | snapshot | check | workspace-snapshot | workspace-check | worker-argv | worker-run | parse-opencode-session | parse-opencode-usage")
     cmd, rest = args[0], args[1:]
     if cmd == "inspect":
         return _cmd_inspect(rest)
@@ -1189,6 +1226,8 @@ def main(argv=None):
         return _cmd_get_ordinary_session(rest)
     if cmd == "set-ordinary-session":
         return _cmd_set_ordinary_session(rest)
+    if cmd == "adopt-ordinary-session":
+        return _cmd_adopt_ordinary_session(rest)
     if cmd == "clear-ordinary-session":
         return _cmd_clear_ordinary_session(rest)
     if cmd == "snapshot":
@@ -1244,6 +1283,8 @@ def _cmd_inspect(rest):
     )
     try:
         ns = parser.parse_args(rest)
+        if ns.mode == "ordinary":
+            ensure_ordinary_config(ns.root)
         configured = read_default_executor(ns.root)
         configured_worker_agent = read_opencode_worker_agent(ns.root)
         opencode_transport = read_opencode_transport(ns.root)
@@ -1467,6 +1508,94 @@ def _cmd_set_ordinary_session(rest):
         return _fail(2, str(e))
     except OSError as e:
         return _fail(3, "写入状态失败：{}".format(e))
+    print(json.dumps(_ordinary_session_payload(session), ensure_ascii=False))
+    return 0
+
+
+def _strict_json_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("OpenCode session list JSON 包含重复字段：{}".format(key))
+        value[key] = item
+    return value
+
+
+def _reject_json_constant(value):
+    raise ValueError("OpenCode session list JSON 包含非法常量：{}".format(value))
+
+
+def _cmd_adopt_ordinary_session(rest):
+    import argparse
+    parser = argparse.ArgumentParser(prog="executor_support adopt-ordinary-session")
+    parser.add_argument("--root", required=True)
+    parser.add_argument("--run-key", required=True)
+    parser.add_argument("--session-id", required=True)
+    try:
+        ns = parser.parse_args(rest)
+        _, run_key = _ordinary_run_key_parts(ns.run_key)
+        root = os.path.realpath(os.path.abspath(ns.root))
+        if not os.path.isdir(root):
+            raise ValueError("项目根目录不存在：{}".format(root))
+        _validate_session_pair("opencode", ns.session_id, transport="cli")
+        if read_ordinary_session(root, run_key) is not None:
+            raise ValueError("普通 runKey 已绑定 session，拒绝采用覆盖：{}".format(run_key))
+        launch_argv = resolve_launch_argv(
+            ["opencode", "session", "list", "--format", "json",
+             "--max-count", "10000"], which=shutil.which, platform=os.name)
+        result = subprocess.run(
+            launch_argv,
+            cwd=root, capture_output=True, text=True, encoding="utf-8",
+            errors="strict", timeout=30, check=False, shell=False,
+        )
+        if result.returncode != 0:
+            raise ValueError("OpenCode 命令失败：{}".format(
+                (result.stderr or result.stdout or "退出码 {}".format(result.returncode)).strip()))
+        try:
+            sessions = json.loads(result.stdout, object_pairs_hook=_strict_json_object,
+                                  parse_constant=_reject_json_constant)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("OpenCode session list JSON 无效：{}".format(exc))
+        if not isinstance(sessions, list):
+            raise ValueError("OpenCode session list JSON 顶层必须是数组")
+        matching = []
+        seen_ids = set()
+        for item in sessions:
+            if not isinstance(item, dict):
+                raise ValueError("OpenCode session list JSON 条目必须是对象")
+            sid = item.get("id")
+            directory = item.get("directory")
+            if not isinstance(sid, str):
+                raise ValueError("OpenCode session list JSON 条目缺少有效 id")
+            try:
+                _validate_session_pair("opencode", sid, transport="cli")
+            except ValueError as exc:
+                raise ValueError("OpenCode session list 包含非法 session ID：{}".format(exc))
+            if sid in seen_ids:
+                raise ValueError("OpenCode session list 存在重复 session ID：{}".format(sid))
+            seen_ids.add(sid)
+            if not isinstance(directory, str) or not directory:
+                raise ValueError("OpenCode session list 条目缺少项目目录")
+            if sid == ns.session_id:
+                matching.append((sid, directory))
+        if not matching:
+            raise ValueError("指定的 OpenCode session ID 不存在：{}".format(ns.session_id))
+        if len(matching) != 1:
+            raise ValueError("OpenCode session ID 不唯一：{}".format(ns.session_id))
+        listed_root = os.path.realpath(os.path.abspath(matching[0][1]))
+        if os.path.normcase(listed_root) != os.path.normcase(root):
+            raise ValueError("OpenCode session 项目目录与当前项目不匹配：{}".format(
+                matching[0][1]))
+        write_ordinary_session(root, run_key, "opencode", ns.session_id,
+                               agent=None, transport="cli",
+                               create_if_absent=True)
+        session = read_ordinary_session(root, run_key)
+    except SystemExit as exc:
+        return _argparse_exit_code(exc)
+    except ValueError as exc:
+        return _fail(2, str(exc))
+    except (OSError, subprocess.SubprocessError) as exc:
+        return _fail(3, "OpenCode 命令失败：{}".format(exc))
     print(json.dumps(_ordinary_session_payload(session), ensure_ascii=False))
     return 0
 

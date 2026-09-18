@@ -1,7 +1,7 @@
 # 场景：显式 full 进入完整治理
 
 ## 仓库状态
-已初始化 AR 仓库：`codespec/.ar/config.yaml` 存在（模块表含 auth）；`codespec/SPEC.md`、`codespec/DESIGN.md` 存在；无活跃 AR；`codespec/changes/` 下无目录。src/ 有现有代码（登录功能）。
+已初始化 AR 仓库：`codespec/.codespec/config.yaml` 存在（模块表含 auth）；`codespec/SPEC.md`、`codespec/DESIGN.md` 存在；无活跃 AR；`codespec/changes/` 下无目录。src/ 有现有代码（登录功能）。
 
 ## 用户输入
 `$codex-workflow full 给系统加一个导出报表的功能，数据从数据库聚合`

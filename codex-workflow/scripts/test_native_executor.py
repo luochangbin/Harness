@@ -15,8 +15,8 @@ class RejectedBuildExecutorTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = self.tmp.name
-        os.makedirs(os.path.join(self.root, "codespec", ".ar"))
-        self.config = os.path.join(self.root, "codespec", ".ar", "config.yaml")
+        os.makedirs(os.path.join(self.root, "codespec", ".codespec"))
+        self.config = os.path.join(self.root, "codespec", ".codespec", "config.yaml")
         with open(self.config, "w", encoding="utf-8") as f:
             f.write("language: zh-CN\ndefault_executor: ask\nmodules: []\n")
         self.change = "AR-001-native"

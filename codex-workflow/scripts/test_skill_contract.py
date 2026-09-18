@@ -72,6 +72,10 @@ class WorkflowContractTest(unittest.TestCase):
         self.assert_policy(choice, "显式选择.*ordinary session.*项目默认值.*询问", "ask", "不得静默")
         self.assert_policy(choice, "snapshot", "Worker", "前先执行")
         self.assertIn("executor_support.py ensure-git --root", choice)
+        self.assertIn("codespec/.codespec/config.yaml", self.ordinary)
+        self.assertIn("原子创建", self.ordinary)
+        self.assertIn("default_executor: ask", self.ordinary)
+        self.assertIn("完全忽略，不读取、不迁移", self.ordinary)
 
     def test_build_executor_menu_has_only_current_and_opencode(self):
         for document in (self.skill, self.full, self.ordinary):
@@ -98,6 +102,10 @@ class WorkflowContractTest(unittest.TestCase):
         self.assert_policy(cli, "渲染", "UTF-8", "REQUEST", "ALLOWED_PATHS",
                            "ACCEPTANCE", "TEST_COMMANDS", "不得直接.*模板源文件")
         self.assert_policy(prompt, "Do not create or update", "AR", "verification", "archive")
+        self.assertIn("adopt-ordinary-session", self.ordinary)
+        self.assert_policy(self.ordinary, "session ID", "只能采用", "不可静默创建", "改走 Server")
+        self.assertIn("不返回 agent", self.ordinary)
+        self.assertIn("省略 `--agent`", self.ordinary)
 
     def test_ordinary_server_lock_revision_and_snapshots(self):
         server = _section(self.ordinary, "OpenCode Server")
@@ -115,7 +123,7 @@ class WorkflowContractTest(unittest.TestCase):
 
     def test_full_storage_and_explicit_resume(self):
         init = _section(self.full, "初始化与恢复")
-        for path in ("codespec/.ar/config.yaml", "codespec/changes/AR-XXX", ".ar.yaml"):
+        for path in ("codespec/.codespec/config.yaml", "codespec/changes/AR-XXX", ".ar.yaml"):
             self.assertIn(path, init)
         self.assert_policy(init, "tier.*full", "phase.*open")
         self.assert_policy(init, "明确.*继续.*才恢复", "新需求", "多个活跃 AR", "已归档.*禁止恢复")

@@ -1,7 +1,7 @@
 # 场景：已配置执行器不可用
 
 ## 仓库状态
-已初始化 AR 仓库；active AR `AR-014-cfg-down`（phase: build，tasks.md 存在非空）；`codespec/.ar/config.yaml` 已含 `default_executor: opencode`；**假 OpenCode 缺失/探针失败**；executor_support.py 可用。
+已初始化 AR 仓库；active AR `AR-014-cfg-down`（phase: build，tasks.md 存在非空）；`codespec/.codespec/config.yaml` 已含 `default_executor: opencode`；**假 OpenCode 缺失/探针失败**；executor_support.py 可用。
 
 ## 用户输入
 "继续 Build"

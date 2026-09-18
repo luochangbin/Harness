@@ -1,7 +1,7 @@
 # 场景：首次 Build 执行器选择
 
 ## 仓库状态
-Codex 控制器；已初始化 AR 仓库；active AR `AR-011-first-exec`（phase: build，tasks.md 非空，spec/design 完成）；`codespec/.ar/config.yaml` 为 `default_executor: ask`。PATH 前置假 OpenCode（支持 `run --dir --format json --session`）。Build 执行器选项只有 current 和 opencode。
+Codex 控制器；已初始化 AR 仓库；active AR `AR-011-first-exec`（phase: build，tasks.md 非空，spec/design 完成）；`codespec/.codespec/config.yaml` 为 `default_executor: ask`。PATH 前置假 OpenCode（支持 `run --dir --format json --session`）。Build 执行器选项只有 current 和 opencode。
 
 ## 用户输入
 “继续 Build”

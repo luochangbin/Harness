@@ -196,8 +196,8 @@ def _validate_session_fields(fields):
 
 
 def load_config(root):
-    """行解析 codespec/.ar/config.yaml → {模块 id: {label, spec_section, design_section}}。"""
-    path = os.path.join(root, "codespec", ".ar", "config.yaml")
+    """行解析 codespec/.codespec/config.yaml → {模块 id: {label, spec_section, design_section}}。"""
+    path = os.path.join(root, "codespec", ".codespec", "config.yaml")
     if not os.path.isfile(path):
         raise FileNotFoundError("缺少模块登记配置：{}".format(path))
     config = {}
@@ -567,7 +567,7 @@ def plan_archive(root, change_name, require_confirmation=False):
     if errors:
         return {"ok": False, "errors": errors}
 
-    # 3. 模块全部登记在 codespec/.ar/config.yaml（含 spec_section/design_section 锚点）
+    # 3. 模块全部登记在 codespec/.codespec/config.yaml（含 spec_section/design_section 锚点）
     try:
         config = load_config(root)
     except (OSError, ValueError) as e:

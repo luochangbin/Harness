@@ -15,7 +15,7 @@
    由 Codex 审核 → MCP 修复 → Codex 独立复审；整体无轮数上限，同一问题三次未解决暂缓并集中反馈。
    详见 Skill 的 `reference/review-repair-loop.md`。
 
-普通入口在当前会话中明确目标、边界和验收，选择或复用 `current` 或 `opencode`，Worker 实现后由控制 Agent 独立审查验证；它不创建或恢复 AR，也不依赖 spec/design/tasks 文档。只有 `$codex-workflow full <需求>` 进入完整治理。
+普通入口在当前会话中明确目标、边界和验收，选择或复用 `current` 或 `opencode`，Worker 实现后由控制 Agent 独立审查验证；它不创建或恢复 AR，也不依赖 spec/design/tasks 文档。缺少配置时只创建 `codespec/.codespec/config.yaml`（`default_executor: ask`）。用户给出 OpenCode session ID 时，普通入口通过 CLI 校验项目目录并采用原 session；不会静默创建新 session 或改走 Server。只有 `$codex-workflow full <需求>` 进入完整治理。
 
 Design 由当前 Codex 完成，不接入网页版模型或 Oracle CLI。普通 Worker 使用 `templates/ordinary-worker-prompt.txt`，full Worker 使用 `templates/build-worker-prompt.txt`。
 

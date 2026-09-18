@@ -45,9 +45,12 @@ Bug 修复必须先定位并复现问题，建立失败测试或等价的可重�
 python <skill 基目录>/scripts/executor_support.py inspect --root <仓库根> --mode ordinary --run-key ordinary:<suffix> --controller-runtime <codex|claude|opencode>
 ```
 
+配置唯一存放于 `codespec/.codespec/config.yaml`。普通 `inspect` 遇到缺失配置时只原子创建 `default_executor: ask`，完全忽略且不迁移旧 AR 配置，也不创建 spec、design、changes、tasks、verification 或 AR 文件；显式 `full` 读取同一配置路径。
+
 用户本次明确指定 Executor 时追加 `--explicit <current|opencode>`；当前环境明确为受限沙箱时追加 `--restricted-sandbox`。`--controller-runtime` 只描述控制器运行时，不增加 Build Executor 选项。该 inspect 只解析普通配置和普通 session，不读取 AR 的 change、phase、design 或 tasks。
 
 - 用户本次明确指定 `current` 或 `opencode` 时，使用该执行器。
+- 用户提供已有 OpenCode session ID 时，必须使用 CLI adoption：先运行 `adopt-ordinary-session` 验证精确 ID 和项目目录，再以原 ID 恢复；不得静默创建新 session 或切换到 Server。session list 不提供 agent 时沿用 session 自身设置，resume 不传 `--agent`。
 - 已有普通会话绑定 session 时，优先恢复绑定的 executor、agent 和 session。
 - 没有会话绑定时，读取项目默认 Executor。
 - 没有默认值或默认值为 `ask` 时必须询问用户选择；不得静默使用 current。

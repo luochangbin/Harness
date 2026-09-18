@@ -75,7 +75,7 @@ flowchart TB
 ### 关键设计
 
 - **控制权不外包**：设计与决策由当前控制 Agent 完成；外部 Executor 只负责实现，最终结果由控制 Agent 重新检查和验证。
-- **Executor 选择与复用**：普通入口没有配置时必须询问；已有普通 session 复用原 Executor、agent 和 session。Full 按 AR 绑定执行器和 session。
+- **Executor 选择与复用**：普通入口缺少配置时在 `codespec/.codespec/config.yaml` 原子创建 `default_executor: ask`，并询问选择；旧 AR 配置忽略且不迁移。已有普通 session 复用原 Executor、agent 和 session。用户指定 OpenCode session ID 时用 CLI adoption 校验项目目录后绑定原 ID，不自动创建新 session或改走 Server。Full 按 AR 绑定执行器和 session。
 - **独立验收**：Worker 完成或 Server 接收只表示执行状态，控制 Agent 仍检查真实 diff 并独立重跑测试。
 - **不静默降级**：Executor 不可用时明确停止并报告，不擅自切换模型或执行路径。
 - **Full 归档前确认**：先运行 dry-run 和一致性检查，只有用户确认后才更新主规范并归档。

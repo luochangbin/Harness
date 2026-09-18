@@ -1,7 +1,7 @@
 # 场景：本轮显式指定执行器覆盖绑定
 
 ## 仓库状态
-已初始化 AR 仓库；active AR `AR-019-explicit-now`（phase: build，tasks.md 存在非空）；`codespec/.ar/config.yaml` 已含 `default_executor: opencode`；`.ar.yaml` 已绑定 `worker_executor: opencode`、`worker_transport: server`、`worker_session_id: <session-A>`；假 OpenCode 可启动；executor_support.py 可用。
+已初始化 AR 仓库；active AR `AR-019-explicit-now`（phase: build，tasks.md 存在非空）；`codespec/.codespec/config.yaml` 已含 `default_executor: opencode`；`.ar.yaml` 已绑定 `worker_executor: opencode`、`worker_transport: server`、`worker_session_id: <session-A>`；假 OpenCode 可启动；executor_support.py 可用。
 
 ## 用户输入
 "这次 Build 用 current 来干"

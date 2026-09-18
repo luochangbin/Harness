@@ -13,6 +13,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -46,8 +48,8 @@ class DefaultExecutorReadTest(unittest.TestCase):
     def setUp(self):
         self._td = tempfile.TemporaryDirectory()
         self.root = self._td.name
-        os.makedirs(os.path.join(self.root, "codespec", ".ar"))
-        self.config = os.path.join(self.root, "codespec", ".ar", "config.yaml")
+        os.makedirs(os.path.join(self.root, "codespec", ".codespec"))
+        self.config = os.path.join(self.root, "codespec", ".codespec", "config.yaml")
         self.addCleanup(self._td.cleanup)
 
     def test_missing_field_is_backward_compatible_ask(self):
@@ -78,8 +80,8 @@ class OpencodeTransportReadTest(unittest.TestCase):
     def setUp(self):
         self._td = tempfile.TemporaryDirectory()
         self.root = self._td.name
-        os.makedirs(os.path.join(self.root, "codespec", ".ar"))
-        self.config = os.path.join(self.root, "codespec", ".ar", "config.yaml")
+        os.makedirs(os.path.join(self.root, "codespec", ".codespec"))
+        self.config = os.path.join(self.root, "codespec", ".codespec", "config.yaml")
         self.addCleanup(self._td.cleanup)
 
     def test_missing_field_defaults_to_server(self):
@@ -106,8 +108,8 @@ class OpencodeWorkerAgentConfigReadTest(unittest.TestCase):
     def setUp(self):
         self._td = tempfile.TemporaryDirectory()
         self.root = self._td.name
-        os.makedirs(os.path.join(self.root, "codespec", ".ar"))
-        self.config = os.path.join(self.root, "codespec", ".ar", "config.yaml")
+        os.makedirs(os.path.join(self.root, "codespec", ".codespec"))
+        self.config = os.path.join(self.root, "codespec", ".codespec", "config.yaml")
         self.addCleanup(self._td.cleanup)
 
     def test_missing_field_is_backward_compatible(self):
@@ -138,8 +140,8 @@ class DefaultExecutorWriteTest(unittest.TestCase):
     def setUp(self):
         self._td = tempfile.TemporaryDirectory()
         self.root = self._td.name
-        os.makedirs(os.path.join(self.root, "codespec", ".ar"))
-        self.config = os.path.join(self.root, "codespec", ".ar", "config.yaml")
+        os.makedirs(os.path.join(self.root, "codespec", ".codespec"))
+        self.config = os.path.join(self.root, "codespec", ".codespec", "config.yaml")
         self.addCleanup(self._td.cleanup)
 
     def test_insert_preserves_comments_order_and_utf8(self):
@@ -399,8 +401,8 @@ class InspectCommandTest(unittest.TestCase):
     def setUp(self):
         self._td = tempfile.TemporaryDirectory()
         self.root = self._td.name
-        os.makedirs(os.path.join(self.root, "codespec", ".ar"))
-        self.config = os.path.join(self.root, "codespec", ".ar", "config.yaml")
+        os.makedirs(os.path.join(self.root, "codespec", ".codespec"))
+        self.config = os.path.join(self.root, "codespec", ".codespec", "config.yaml")
         self.addCleanup(self._td.cleanup)
 
     def _run(self, args):
@@ -423,6 +425,267 @@ class InspectCommandTest(unittest.TestCase):
         self.assertEqual(data["reason_code"], "FIRST_BUILD_SELECTION_REQUIRED")
         self.assertEqual(data["choices"], ["current", "opencode"])
         detect.assert_not_called()
+
+    def test_ordinary_empty_project_initializes_minimal_config_and_ignores_legacy(self):
+        old_config = os.path.join(self.root, "codespec", ".ar", "config.yaml")
+        _write(old_config, "default_executor: opencode\n")
+        self.config = os.path.join(self.root, "codespec", ".codespec", "config.yaml")
+        with mock.patch("executor_support.detect_external_executors") as detect:
+            code, out = self._run(["--mode", "ordinary", "--run-key", "ordinary:empty"])
+        self.assertEqual(code, 0)
+        data = json.loads(out)
+        self.assertEqual(data["decision"], "ask")
+        self.assertEqual(data["configured"], "ask")
+        self.assertEqual(data["choices"], ["current", "opencode"])
+        self.assertEqual(_read(self.config), "default_executor: ask\n")
+        self.assertEqual(_read(old_config), "default_executor: opencode\n")
+        for name in ("SPEC.md", "DESIGN.md", "changes", "spec.md", "design.md",
+                     "tasks.md", "verification.md", "AR-001"):
+            self.assertFalse(os.path.exists(os.path.join(self.root, "codespec", name)), name)
+        detect.assert_not_called()
+
+    def test_ordinary_empty_project_explicit_current_and_opencode(self):
+        self.config = os.path.join(self.root, "codespec", ".codespec", "config.yaml")
+        for executor in ("current", "opencode"):
+            code, out = self._run(["--mode", "ordinary", "--run-key",
+                                   "ordinary:explicit-" + executor, "--explicit", executor])
+            self.assertEqual(code, 0, out)
+            data = json.loads(out)
+            self.assertEqual(data["decision"], "use")
+            self.assertEqual(data["selected"], executor)
+            self.assertEqual(_read(self.config), "default_executor: ask\n")
+
+
+class OrdinarySessionAdoptionTest(unittest.TestCase):
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._td.name)
+        self.session_id = "ses_f7c94deb5ffenNzk2i3ES6L0fB"
+        self.addCleanup(self._td.cleanup)
+
+    def _adopt(self, run_key, stdout="[]", returncode=0, side_effect=None):
+        result = subprocess.CompletedProcess(args=["opencode", "session", "list"],
+                                             returncode=returncode, stdout=stdout, stderr="")
+        patch_kwargs = {"side_effect": side_effect} if side_effect is not None else {"return_value": result}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), mock.patch(
+                "executor_support.subprocess.run", **patch_kwargs) as run:
+            code = es.main(["adopt-ordinary-session", "--root", self.root,
+                            "--run-key", run_key, "--session-id", self.session_id])
+        return code, buf.getvalue(), run
+
+    def test_adopt_validates_root_and_writes_cli_binding(self):
+        output = json.dumps([{"id": self.session_id, "title": "Existing",
+                              "projectId": "project", "directory": self.root}])
+        code, out, run = self._adopt("ordinary:adopt", output)
+        self.assertEqual(code, 0, out)
+        self.assertIn("--format", run.call_args.args[0])
+        self.assertIn("--max-count", run.call_args.args[0])
+        binding = es.read_ordinary_session(self.root, "ordinary:adopt")
+        self.assertEqual(binding["executor"], "opencode")
+        self.assertEqual(binding["transport"], "cli")
+        self.assertEqual(binding["session_id"], self.session_id)
+        self.assertIsNone(binding.get("agent"))
+
+    def test_adopt_uses_existing_windows_wrapper_resolver(self):
+        npm_dir = os.path.join(self.root, "npm")
+        os.makedirs(npm_dir)
+        wrapper = os.path.join(npm_dir, "opencode.cmd")
+        script = os.path.join(npm_dir, "opencode.ps1")
+        pwsh = os.path.join(self.root, "pwsh.exe")
+        for path in (wrapper, script, pwsh):
+            _write(path, "stub")
+        output = json.dumps([{"id": self.session_id, "title": "Existing",
+                              "projectId": "project", "directory": self.root}])
+        result = subprocess.CompletedProcess(args=[], returncode=0,
+                                             stdout=output, stderr="")
+
+        def fake_which(name):
+            return pwsh if name == "pwsh" else wrapper
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), \
+                mock.patch("executor_support.shutil.which", side_effect=fake_which), \
+                mock.patch("executor_support.subprocess.run", return_value=result) as run:
+            code = es.main(["adopt-ordinary-session", "--root", self.root,
+                            "--run-key", "ordinary:wrapper", "--session-id",
+                            self.session_id])
+
+        self.assertEqual(code, 0, buf.getvalue())
+        self.assertEqual(
+            run.call_args.args[0],
+            [pwsh, "-NoLogo", "-NoProfile", "-File", script,
+             "session", "list", "--format", "json", "--max-count", "10000"],
+        )
+        self.assertIs(run.call_args.kwargs["shell"], False)
+
+    def test_adopt_rejects_existing_binding_without_changing_it(self):
+        es.write_ordinary_session(self.root, "ordinary:bound", "opencode",
+                                  "ses_existing", agent="bound-agent",
+                                  transport="cli", task_batch="1,2")
+        before = es.read_ordinary_session(self.root, "ordinary:bound")
+
+        code, out, run = self._adopt("ordinary:bound")
+
+        self.assertEqual(code, 2, out)
+        self.assertIn("拒绝", json.loads(out)["error"])
+        run.assert_not_called()
+        self.assertEqual(es.read_ordinary_session(self.root, "ordinary:bound"),
+                         before)
+
+    def test_concurrent_adoption_creates_exactly_one_binding(self):
+        run_key = "ordinary:race"
+        session_ids = ("ses_race_alpha", "ses_race_beta")
+        output = json.dumps([
+            {"id": session_id, "title": session_id,
+             "projectId": "project", "directory": self.root}
+            for session_id in session_ids
+        ])
+        result = subprocess.CompletedProcess(
+            args=["opencode", "session", "list"], returncode=0,
+            stdout=output, stderr="")
+        barrier = threading.Barrier(2)
+        results = {}
+        printed = {}
+        failures = []
+        result_lock = threading.Lock()
+        replace_lock = threading.Lock()
+        real_replace = os.replace
+
+        def fake_run(*args, **kwargs):
+            barrier.wait(timeout=5)
+            time.sleep(0.05)
+            return result
+
+        def fake_print(value, *args, **kwargs):
+            with result_lock:
+                printed[threading.current_thread().name] = value
+
+        def serialized_replace(source, target):
+            with replace_lock:
+                if os.path.exists(target):
+                    time.sleep(0.05)
+                    os.unlink(target)
+                return real_replace(source, target)
+
+        def adopt(session_id):
+            try:
+                code = es.main([
+                    "adopt-ordinary-session", "--root", self.root,
+                    "--run-key", run_key, "--session-id", session_id,
+                ])
+                with result_lock:
+                    results[session_id] = code
+            except BaseException as exc:
+                with result_lock:
+                    failures.append(exc)
+
+        threads = [
+            threading.Thread(target=adopt, args=(session_id,), name=session_id)
+            for session_id in session_ids
+        ]
+        with mock.patch("executor_support.resolve_launch_argv",
+                        side_effect=lambda argv, **kwargs: argv), \
+                mock.patch("executor_support.subprocess.run",
+                           side_effect=fake_run), \
+                mock.patch("executor_support.os.replace",
+                           side_effect=serialized_replace), \
+                mock.patch("builtins.print", side_effect=fake_print):
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertEqual(failures, [])
+        self.assertEqual(sorted(results.values()), [0, 2],
+                         {"results": results, "printed": printed})
+        successful_id = next(session_id for session_id, code in results.items()
+                             if code == 0)
+        conflicting_id = next(session_id for session_id, code in results.items()
+                              if code == 2)
+        binding = es.read_ordinary_session(self.root, run_key)
+        self.assertEqual(binding["session_id"], successful_id)
+        self.assertIn("冲突", json.loads(printed[conflicting_id])["error"])
+
+    def test_adopt_missing_mismatch_bad_json_or_command_failure_has_no_binding(self):
+        cases = (("missing", "[]", 0, "不存在"),
+                 ("wrong-root", json.dumps([{"id": self.session_id,
+                                               "directory": self.root + "-other"}]), 0, "目录"),
+                 ("bad-json", "{bad", 0, "JSON"),
+                 ("failed", "", 1, "命令"))
+        for suffix, output, returncode, expected_error in cases:
+            with self.subTest(suffix=suffix):
+                code, out, _ = self._adopt("ordinary:adopt-" + suffix,
+                                           output, returncode)
+                self.assertNotEqual(code, 0, out)
+                self.assertIn(expected_error, json.loads(out)["error"])
+                self.assertIsNone(es.read_ordinary_session(
+                    self.root, "ordinary:adopt-" + suffix))
+        code, out, _ = self._adopt("ordinary:adopt-exception",
+                                   side_effect=OSError("failed"))
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("命令", json.loads(out)["error"])
+        self.assertIsNone(es.read_ordinary_session(self.root, "ordinary:adopt-exception"))
+
+    def test_adopt_atomic_publish_failure_has_no_binding(self):
+        run_key = "ordinary:publish-failure"
+        output = json.dumps([{"id": self.session_id, "title": "Existing",
+                              "projectId": "project", "directory": self.root}])
+        with mock.patch("executor_support.os.link",
+                        side_effect=OSError("publish failed")):
+            code, out, _ = self._adopt(run_key, output)
+        self.assertEqual(code, 3, out)
+        self.assertIn("publish failed", json.loads(out)["error"])
+        self.assertIsNone(es.read_ordinary_session(self.root, run_key))
+
+    def test_adopted_session_resumes_with_original_id_and_without_agent(self):
+        output = json.dumps([{"id": self.session_id, "title": "Existing",
+                              "projectId": "project", "directory": self.root}])
+        code, out, _ = self._adopt("ordinary:adopt-resume", output)
+        self.assertEqual(code, 0, out)
+        prompt_file = os.path.join(self.root, "ordinary-prompt.txt")
+        stdout_path = os.path.join(self.root, "worker.jsonl")
+        stderr_path = os.path.join(self.root, "worker.stderr")
+        _write(prompt_file, "run={{RUN_KEY}} batch={{TASK_BATCH}}")
+        _write(stdout_path, json.dumps({"sessionID": self.session_id}) + "\n")
+        _write(stderr_path, "")
+        captured = {}
+        result = {"completed": True, "worker_exit_code": 0,
+                  "stdout_path": stdout_path, "stderr_path": stderr_path,
+                  "launch_executable": "opencode",
+                  "codespec_check": {"ok": True, "changed": False,
+                                     "changes": {"added": [], "removed": [], "modified": []}},
+                  "workspace_check": {"ok": True, "changed": False,
+                                      "changes": {"added": [], "removed": [], "modified": []}}}
+        def run_guard(argv, root, timeout_seconds):
+            captured["argv"] = argv
+            return result
+        args = ["worker-run", "--executor", "opencode", "--action", "resume",
+                "--root", self.root, "--run-key", "ordinary:adopt-resume",
+                "--prompt-file", prompt_file, "--controller-runtime", "codex"]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), mock.patch(
+                "executor_support.run_worker_with_codespec_guard", side_effect=run_guard):
+            code = es.main(args)
+        self.assertEqual(code, 0, buf.getvalue())
+        self.assertIn(self.session_id, captured["argv"])
+        self.assertNotIn("--agent", captured["argv"])
+
+
+class InspectCommandRemainderTest(unittest.TestCase):
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.root = self._td.name
+        os.makedirs(os.path.join(self.root, "codespec", ".codespec"))
+        self.config = os.path.join(self.root, "codespec", ".codespec", "config.yaml")
+        self.addCleanup(self._td.cleanup)
+
+    def _run(self, args):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = es.main(["inspect", "--root", self.root] + args)
+        return code, buf.getvalue()
 
     def test_restricted_sandbox_still_asks_before_targeted_probe(self):
         _write(self.config, "language: zh-CN\nmodules: []\n")
@@ -794,7 +1057,7 @@ class WorkerSessionWriteTest(unittest.TestCase):
     def test_project_default_change_does_not_affect_binding(self):
         _state_dir(self.root)
         _write(_state_path(self.root), NEW_STATE)
-        cfg = os.path.join(self.root, "codespec", ".ar", "config.yaml")
+        cfg = os.path.join(self.root, "codespec", ".codespec", "config.yaml")
         os.makedirs(os.path.dirname(cfg), exist_ok=True)
         _write(cfg, "language: zh-CN\ndefault_executor: opencode\nmodules: []\n")
         es.write_default_executor(self.root, "opencode")
@@ -1135,7 +1398,7 @@ class SnapshotCompareTest(unittest.TestCase):
         os.makedirs(os.path.join(self.root, "codespec"))
         _codespec(self.root, "SPEC.md", "# spec v1\n")
         _codespec(self.root, "DESIGN.md", "# design v1\n")
-        _codespec(self.root, ".ar/config.yaml", "language: zh-CN\n")
+        _codespec(self.root, ".codespec/config.yaml", "language: zh-CN\n")
         _codespec(self.root, "changes/AR-001-test/spec.md", "# incremental\n")
         self.addCleanup(self._td.cleanup)
 
@@ -1336,9 +1599,9 @@ class InspectChangeRoutingTest(unittest.TestCase):
     def setUp(self):
         self._td = tempfile.TemporaryDirectory()
         self.root = self._td.name
-        os.makedirs(os.path.join(self.root, "codespec", ".ar"))
+        os.makedirs(os.path.join(self.root, "codespec", ".codespec"))
         os.makedirs(os.path.join(self.root, "codespec", "changes", "AR-001-test"))
-        self.config = os.path.join(self.root, "codespec", ".ar", "config.yaml")
+        self.config = os.path.join(self.root, "codespec", ".codespec", "config.yaml")
         self.state = os.path.join(self.root, "codespec", "changes",
                                   "AR-001-test", ".ar.yaml")
         self.addCleanup(self._td.cleanup)

@@ -37,9 +37,9 @@ def _read(path):
 
 
 def build_fixture(root, change="AR-001-test"):
-    """构造可归档仓库：codespec/.ar/config.yaml + SPEC.md + DESIGN.md + changes/<change>/。"""
+    """构造可归档仓库：codespec/.codespec/config.yaml + SPEC.md + DESIGN.md + changes/<change>/。"""
     _write(os.path.join(root, "app.py"), "version = 1\n")
-    _write(os.path.join(root, "codespec", ".ar", "config.yaml"), u'''# AR 工作流项目配置
+    _write(os.path.join(root, "codespec", ".codespec", "config.yaml"), u'''# AR 工作流项目配置
 language: zh-CN
 modules:
   - id: auth
@@ -138,7 +138,7 @@ class ArchiveChangeTest(unittest.TestCase):
 
     # ---- 配置兼容：default_executor 顶层字段不影响模块解析 ----
     def test_load_config_tolerates_default_executor(self):
-        _write(os.path.join(self.root, "codespec", ".ar", "config.yaml"), u'''# AR 工作流项目配置
+        _write(os.path.join(self.root, "codespec", ".codespec", "config.yaml"), u'''# AR 工作流项目配置
 language: zh-CN
 default_executor: claude
 modules:
@@ -853,7 +853,7 @@ design_base_hash: null
         self.addCleanup(td.cleanup)
         root = td.name
         change = "AR-004-multidesign"
-        _write(os.path.join(root, "codespec", ".ar", "config.yaml"), u'''language: zh-CN
+        _write(os.path.join(root, "codespec", ".codespec", "config.yaml"), u'''language: zh-CN
 modules:
   - id: auth
     label: 认证
@@ -1205,7 +1205,7 @@ worker_session_id: '6f0b1a2e-8c4d-4e5f-9a6b-7c8d9e0f1a2b\t'
         self.addCleanup(td.cleanup)
         root = td.name
         change = "AR-002-multi"
-        _write(os.path.join(root, "codespec", ".ar", "config.yaml"), u'''# 配置
+        _write(os.path.join(root, "codespec", ".codespec", "config.yaml"), u'''# 配置
 language: zh-CN
 modules:
   - id: auth
@@ -1312,7 +1312,7 @@ archived: false
         self.addCleanup(td.cleanup)
         root = td.name
         change = "AR-003-noanno"
-        _write(os.path.join(root, "codespec", ".ar", "config.yaml"), u'''language: zh-CN
+        _write(os.path.join(root, "codespec", ".codespec", "config.yaml"), u'''language: zh-CN
 modules:
   - id: auth
     label: 认证

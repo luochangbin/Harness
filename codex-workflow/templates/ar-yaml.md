@@ -3,7 +3,7 @@
 #   ar                   AR 编号（目录名前缀，如 AR-001）
 #   tier                 档位：full
 #   phase                下一步可执行阶段：open | design | build | verify | archive；build 不表示实现已开始
-#   modules              影响模块 id 列表（必须登记在 codespec/.ar/config.yaml）
+#   modules              影响模块 id 列表（必须登记在 codespec/.codespec/config.yaml）
 #   worker_transport     null|server|cli；null 表示 current 路径或按 AR/项目默认值
 #   verify_result        验证结果：pending | pass | fail
 #   verify_failures      连续验证失败次数（verify 失败回 build 时 +1；>=3 后暂停等用户）

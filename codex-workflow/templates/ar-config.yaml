@@ -1,4 +1,4 @@
-# AR 工作流项目配置 — 复制到目标仓库根 codespec/.ar/config.yaml
+# Full 工作流项目配置 — 复制到目标仓库根 codespec/.codespec/config.yaml
 language: zh-CN
 
 # Build Executor 初始为 ask；首次 Build 先选候选，再定向探测

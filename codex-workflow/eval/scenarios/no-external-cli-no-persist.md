@@ -1,7 +1,7 @@
 # 场景：首次 Build 先选执行器再定向探测
 
 ## 仓库状态
-已初始化 AR 仓库；active AR `AR-013-no-cli`（phase: build，tasks.md 存在非空）；`codespec/.ar/config.yaml` 为 `default_executor: ask`；executor_support.py 可用。
+已初始化 AR 仓库；active AR `AR-013-no-cli`（phase: build，tasks.md 存在非空）；`codespec/.codespec/config.yaml` 为 `default_executor: ask`；executor_support.py 可用。
 
 ## 用户输入
 "继续 Build"
