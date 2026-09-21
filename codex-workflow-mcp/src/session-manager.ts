@@ -7,7 +7,7 @@ import { PermissionBridge, PermissionResponse, automaticPermissionResponse } fro
 import { RuntimeRecord, SessionStateRecord, SessionStateStore } from './runtime-store.js';
 import { SessionFileLock } from './project-lock.js';
 import { PhaseBatchMode, resolvePhaseBatch } from './phase-batch.js';
-import { buildBoundWorkerPrompt, buildOrdinaryWorkerPrompt } from './worker-prompt.js';
+import { buildBoundWorkerPrompt, buildOrdinaryWorkerPrompt, validateWorkerPrompt } from './worker-prompt.js';
 
 const terminal = new Set<OpenCodeStatus>(['completed', 'failed', 'interrupted']);
 const active = new Set(['sending', 'ready', 'running', 'awaiting_permission']);
@@ -314,6 +314,7 @@ export class SessionManager {
   }
 
   async sendOrdinary(runtime: RuntimeRecord, sessionId: string, runKey: string, taskBatch: string, prompt: string, expectedRevision: number, codespecSnapshotPath: string, workspaceSnapshotPath: string) {
+    validateWorkerPrompt(prompt);
     const match = ordinaryRunKeyPattern.exec(runKey);
     if (!match) throw new BrokerError('INVALID_RUN_KEY', 'Ordinary runKey must be ordinary:<suffix>');
     const suffix = match[1];
@@ -340,6 +341,7 @@ export class SessionManager {
   }
 
   async send(runtime: RuntimeRecord, sessionId: string, change: string, taskBatch: string, prompt: string, expectedRevision: number, codespecSnapshotPath?: string, workspaceSnapshotPath?: string, namespace: SessionNamespace = 'ar') {
+    validateWorkerPrompt(prompt);
     return await this.withSessionLock(runtime, sessionId, async () => {
       let state = await this.require(runtime, sessionId);
       if (state.status === 'sending') {

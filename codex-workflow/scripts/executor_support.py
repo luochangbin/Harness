@@ -36,7 +36,11 @@ CHANGE_NAME_RE = re.compile(r"^[A-Za-z0-9-]+$")
 ORDINARY_RUN_KEY_RE = re.compile(r"^ordinary:[A-Za-z0-9_.-]{1,256}$")
 TASK_BATCH_RE = re.compile(
     r"^(?:all|[A-Za-z0-9_.-]+(?:,[A-Za-z0-9_.-]+)*)$")
-UNRESOLVED_TEMPLATE_TOKEN_RE = re.compile(r"\{\{[A-Z][A-Z0-9_]*\}\}")
+WORKFLOW_TEMPLATE_FIELDS = frozenset({
+    "PROJECT_ROOT", "REQUEST", "NON_GOALS", "ALLOWED_PATHS",
+    "ACCEPTANCE", "TEST_COMMANDS", "RUN_KEY", "TASK_BATCH", "AR_CHANGE",
+})
+WORKFLOW_TEMPLATE_TOKEN_RE = re.compile(r"\{\{([A-Z][A-Z0-9_]*)\}\}")
 DEFAULT_WORKER_TIMEOUT_SECONDS = 1800
 
 
@@ -708,7 +712,21 @@ def load_worker_prompt(path, change, task_batch="all"):
             raise ValueError("Worker prompt 必须且只能包含一个 {}".format(token))
     for token, value in replacements.items():
         template = template.replace(token, value)
-    return template
+    return validate_rendered_worker_prompt(template)
+
+
+def validate_rendered_worker_prompt(prompt):
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ValueError("Worker prompt 不能为空")
+    unresolved = sorted({
+        "{{{}}}".format(match.group(1))
+        for match in WORKFLOW_TEMPLATE_TOKEN_RE.finditer(prompt)
+        if match.group(1) in WORKFLOW_TEMPLATE_FIELDS
+    })
+    if unresolved:
+        raise ValueError("Worker prompt 含未渲染占位符：{}".format(
+            ", ".join(unresolved)))
+    return prompt
 
 
 def load_ordinary_worker_prompt(path, run_key, task_batch="all"):
@@ -727,10 +745,7 @@ def load_ordinary_worker_prompt(path, run_key, task_batch="all"):
             raise ValueError("普通 Worker prompt 必须且只能包含一个 {}".format(token))
     for token, value in replacements.items():
         template = template.replace(token, value)
-    unresolved = sorted(set(UNRESOLVED_TEMPLATE_TOKEN_RE.findall(template)))
-    if unresolved:
-        raise ValueError("普通 Worker prompt 含未渲染占位符：{}".format(", ".join(unresolved)))
-    return template
+    return validate_rendered_worker_prompt(template)
 
 
 def resolve_launch_argv(argv, which=shutil.which, platform=os.name):
@@ -817,34 +832,58 @@ def run_worker_process(argv, root, which=shutil.which, platform=os.name,
     output_dir = tempfile.mkdtemp(prefix="ar-worker-")
     stdout_path = os.path.join(output_dir, "stdout.log")
     stderr_path = os.path.join(output_dir, "stderr.log")
-    with open(stdout_path, "wb") as stdout_file, \
-            open(stderr_path, "wb") as stderr_file:
-        popen_kwargs = {
-            "cwd": os.path.abspath(root),
-            "stdin": subprocess.DEVNULL,
-            "stdout": stdout_file,
-            "stderr": stderr_file,
-            "shell": False,
-        }
-        if platform != "nt":
-            popen_kwargs["start_new_session"] = True
-        process = popen(launch_argv, **popen_kwargs)
-        timed_out = False
+    try:
+        with open(stdout_path, "wb") as stdout_file, \
+                open(stderr_path, "wb") as stderr_file:
+            popen_kwargs = {
+                "cwd": os.path.abspath(root),
+                "stdin": subprocess.DEVNULL,
+                "stdout": stdout_file,
+                "stderr": stderr_file,
+                "shell": False,
+            }
+            if platform != "nt":
+                popen_kwargs["start_new_session"] = True
+            process = popen(launch_argv, **popen_kwargs)
+            timed_out = False
+            try:
+                return_code = process.wait(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                _stop_worker_process(process, platform)
+                return_code = process.returncode
+        with open(stdout_path, "rb") as stdout_file:
+            stdout_bytes = stdout_file.read()
+        with open(stderr_path, "rb") as stderr_file:
+            stderr_bytes = stderr_file.read()
+    except Exception as exc:
+        raise OSError(
+            "Worker 运行失败；输出保留于 {}".format(output_dir)
+        ) from exc
+    output_cleaned = False
+    cleanup_error = None
+    if return_code == 0 and not timed_out:
         try:
-            return_code = process.wait(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            _stop_worker_process(process, platform)
-            return_code = process.returncode
-    return {
+            shutil.rmtree(output_dir)
+        except OSError as exc:
+            cleanup_error = str(exc)
+        else:
+            output_cleaned = True
+    result = {
         "completed": True,
         "worker_exit_code": return_code,
         "timed_out": timed_out,
         "timeout_seconds": timeout_seconds,
         "stdout_path": stdout_path,
         "stderr_path": stderr_path,
+        "stdout_bytes": stdout_bytes,
+        "stderr_bytes": stderr_bytes,
+        "output_cleaned": output_cleaned,
         "launch_executable": launch_argv[0],
     }
+    if cleanup_error is not None:
+        result["output_cleanup_error"] = cleanup_error
+    return result
 
 def build_worker_argv(executor, action, prompt, root, session_id=None,
                       worker_agent=None, controller_runtime=None):
@@ -856,6 +895,7 @@ def build_worker_argv(executor, action, prompt, root, session_id=None,
     opencode 为合法 ID）。非法 action、参数组合、非法 ID 或 current executor
     → ValueError，不猜测。
     """
+    prompt = validate_rendered_worker_prompt(prompt)
     if action not in ("create", "resume"):
         raise ValueError("非法 action：{}（只允许 create|resume）".format(action))
     if controller_runtime is not None \
@@ -1090,8 +1130,8 @@ def compare_codespec_snapshot(root, snapshot_path):
     }
     try:
         os.unlink(snapshot_path)
-    except OSError:
-        pass
+    except OSError as e:
+        raise OSError("codespec snapshot 删除失败：{}".format(e))
     return result
 
 
@@ -1126,9 +1166,34 @@ def compare_workspace_snapshot(root, snapshot_path):
     }
     try:
         os.unlink(snapshot_path)
-    except OSError:
-        pass
+    except OSError as e:
+        raise OSError("workspace snapshot 删除失败：{}".format(e))
     return result
+
+
+def _snapshot_check_report(kind, root, snapshot_path):
+    compare = (compare_codespec_snapshot if kind == "codespec"
+               else compare_workspace_snapshot)
+    try:
+        comparison = compare(root, snapshot_path)
+    except (ValueError, OSError) as e:
+        prefix = ("越权检查失败" if kind == "codespec"
+                  else "工作区越权检查失败")
+        return {
+            "ok": False,
+            "changed": None,
+            "error": "{}：{}".format(prefix, e),
+            "snapshot_path": snapshot_path,
+            "snapshot_retained": os.path.exists(snapshot_path),
+        }
+    report = dict(
+        comparison,
+        ok=(not comparison["changed"] if kind == "codespec" else True),
+        snapshot_retained=os.path.exists(snapshot_path),
+    )
+    if report["snapshot_retained"]:
+        report["snapshot_path"] = snapshot_path
+    return report
 
 
 def run_worker_with_codespec_guard(argv, root, runner=run_worker_process,
@@ -1141,48 +1206,29 @@ def run_worker_with_codespec_guard(argv, root, runner=run_worker_process,
     """
     snapshot_path = create_codespec_snapshot(root)
     workspace_snapshot_path = create_workspace_snapshot(root)
+    def snapshot_checks():
+        return {
+            "codespec": _snapshot_check_report(
+                "codespec", root, snapshot_path),
+            "workspace": _snapshot_check_report(
+                "workspace", root, workspace_snapshot_path),
+        }
+
     try:
         if timeout_seconds is None:
             result = runner(argv, root)
         else:
             result = runner(argv, root, timeout_seconds=timeout_seconds)
-    except BaseException:
+    except BaseException as e:
         try:
-            compare_codespec_snapshot(root, snapshot_path)
-        except (ValueError, OSError):
-            pass
-        try:
-            compare_workspace_snapshot(root, workspace_snapshot_path)
-        except (ValueError, OSError):
+            e.snapshot_checks = snapshot_checks()
+        except Exception:
             pass
         raise
     result = dict(result)
-    try:
-        comparison = compare_codespec_snapshot(root, snapshot_path)
-    except (ValueError, OSError) as e:
-        try:
-            compare_workspace_snapshot(root, workspace_snapshot_path)
-        except (ValueError, OSError):
-            pass
-        result["codespec_check"] = {
-            "ok": False,
-            "changed": None,
-            "error": "越权检查失败：{}".format(e),
-        }
-        return result
-    result["codespec_check"] = dict(
-        comparison, ok=not comparison["changed"])
-    try:
-        workspace_comparison = compare_workspace_snapshot(root, workspace_snapshot_path)
-    except (ValueError, OSError) as e:
-        result["workspace_check"] = {
-            "ok": False,
-            "changed": None,
-            "error": "工作区越权检查失败：{}".format(e),
-        }
-        return result
-    result["workspace_check"] = dict(
-        workspace_comparison, ok=True)
+    checks = snapshot_checks()
+    result["codespec_check"] = checks["codespec"]
+    result["workspace_check"] = checks["workspace"]
     return result
 
 
@@ -1778,7 +1824,15 @@ def _cmd_worker_run(rest):
     except ValueError as e:
         return _fail(2, str(e))
     except (OSError, subprocess.SubprocessError) as e:
-        return _fail(3, "Worker 启动/运行异常：{}".format(e))
+        payload = {
+            "ok": False,
+            "error": "Worker 启动/运行异常：{}".format(e),
+        }
+        snapshot_checks = getattr(e, "snapshot_checks", None)
+        if isinstance(snapshot_checks, dict):
+            payload["snapshot_checks"] = snapshot_checks
+        print(json.dumps(payload, ensure_ascii=False))
+        return 3
     result = dict(result)
     if ordinary:
         result["runKey"] = ns.run_key
@@ -1793,12 +1847,12 @@ def _cmd_worker_run(rest):
                        if isinstance(workspace_check, dict)
                        and workspace_check.get("changed") is True
                        else "Worker 越权检查未通过"})
-        print(json.dumps(result, ensure_ascii=False))
+        print(json.dumps(_public_worker_result(result), ensure_ascii=False))
         return 5
     if result.get("timed_out") is True:
         if ns.executor == "opencode":
             try:
-                stdout_text = _read_utf8_input(result["stdout_path"])
+                stdout_text = _read_worker_stdout(result)
                 result["sessionID"] = parse_opencode_session_id(stdout_text)
                 result["usage"] = parse_opencode_usage(stdout_text)
             except (ValueError, OSError, UnicodeError) as e:
@@ -1812,7 +1866,7 @@ def _cmd_worker_run(rest):
                     ns.root, ns.run_key, result["sessionID"])
             except ValueError as e:
                 result.update({"ok": False, "error": str(e)})
-                print(json.dumps(result, ensure_ascii=False))
+                print(json.dumps(_public_worker_result(result), ensure_ascii=False))
                 return 6
         if ordinary and result.get("sessionID"):
             write_ordinary_session(
@@ -1820,19 +1874,19 @@ def _cmd_worker_run(rest):
                 agent=ns.worker_agent, transport="cli",
                 task_batch=ns.task_batch)
         result.update({"ok": False, "error": "Worker 超时并已停止"})
-        print(json.dumps(result, ensure_ascii=False))
+        print(json.dumps(_public_worker_result(result), ensure_ascii=False))
         return 7
     if result["worker_exit_code"] != 0:
         if ordinary:
             if ns.executor == "opencode":
                 try:
-                    stdout_text = _read_utf8_input(result["stdout_path"])
+                    stdout_text = _read_worker_stdout(result)
                     result["sessionID"] = parse_opencode_session_id(stdout_text)
                     result["usage"] = parse_opencode_usage(stdout_text)
                 except (ValueError, OSError, UnicodeError) as e:
                     result.update({"ok": False,
                                    "error": "Worker 输出协议错误：{}".format(e)})
-                    print(json.dumps(result, ensure_ascii=False))
+                    print(json.dumps(_public_worker_result(result), ensure_ascii=False))
                     return 6
             else:
                 result["sessionID"] = ns.session_id
@@ -1842,18 +1896,18 @@ def _cmd_worker_run(rest):
                         ns.root, ns.run_key, result["sessionID"])
                 except ValueError as e:
                     result.update({"ok": False, "error": str(e)})
-                    print(json.dumps(result, ensure_ascii=False))
+                    print(json.dumps(_public_worker_result(result), ensure_ascii=False))
                     return 6
             write_ordinary_session(
                 ns.root, ns.run_key, ns.executor, result["sessionID"],
                 agent=ns.worker_agent, transport="cli",
                 task_batch=ns.task_batch)
         result.update({"ok": False, "error": "Worker 非零退出"})
-        print(json.dumps(result, ensure_ascii=False))
+        print(json.dumps(_public_worker_result(result), ensure_ascii=False))
         return 4
     if ns.executor == "opencode":
         try:
-            stdout_text = _read_utf8_input(result["stdout_path"])
+            stdout_text = _read_worker_stdout(result)
             result["sessionID"] = parse_opencode_session_id(stdout_text)
             if ordinary and ns.action == "resume":
                 _validate_ordinary_resume_session(
@@ -1862,7 +1916,7 @@ def _cmd_worker_run(rest):
         except (ValueError, OSError, UnicodeError) as e:
             result.update({"ok": False,
                            "error": "Worker 输出协议错误：{}".format(e)})
-            print(json.dumps(result, ensure_ascii=False))
+            print(json.dumps(_public_worker_result(result), ensure_ascii=False))
             return 6
     else:
         result["sessionID"] = ns.session_id
@@ -1872,7 +1926,7 @@ def _cmd_worker_run(rest):
             agent=ns.worker_agent, transport="cli",
             task_batch=ns.task_batch)
     result["ok"] = True
-    print(json.dumps(result, ensure_ascii=False))
+    print(json.dumps(_public_worker_result(result), ensure_ascii=False))
     return 0
 
 
@@ -1881,6 +1935,23 @@ def _read_utf8_input(path):
         return sys.stdin.read()
     with open(path, encoding="utf-8", errors="strict") as f:
         return f.read()
+
+
+def _read_worker_stdout(result):
+    data = result.get("stdout_bytes")
+    if data is not None:
+        return data.decode("utf-8", errors="strict")
+    return _read_utf8_input(result["stdout_path"])
+
+
+def _public_worker_result(result):
+    public = dict(result)
+    public.pop("stdout_bytes", None)
+    public.pop("stderr_bytes", None)
+    if public.get("output_cleaned") is True:
+        public.pop("stdout_path", None)
+        public.pop("stderr_path", None)
+    return public
 
 
 def _cmd_parse_opencode_session(rest):

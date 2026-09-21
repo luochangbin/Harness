@@ -1,3 +1,28 @@
+import { BrokerError } from './errors.js';
+
+const workflowTemplateFields = new Set([
+  'PROJECT_ROOT', 'REQUEST', 'NON_GOALS', 'ALLOWED_PATHS',
+  'ACCEPTANCE', 'TEST_COMMANDS', 'RUN_KEY', 'TASK_BATCH', 'AR_CHANGE'
+]);
+const workflowTemplateToken = /\{\{([A-Z][A-Z0-9_]*)\}\}/g;
+
+export function validateWorkerPrompt(prompt: string) {
+  if (typeof prompt !== 'string' || !prompt.trim()) {
+    throw new BrokerError('INVALID_PROMPT', 'Prompt must not be empty');
+  }
+  const unresolved = [...prompt.matchAll(workflowTemplateToken)]
+    .map(match => match[1])
+    .filter(field => workflowTemplateFields.has(field));
+  if (unresolved.length) {
+    throw new BrokerError(
+      'INVALID_PROMPT',
+      'Prompt contains unresolved workflow placeholders: ' +
+        [...new Set(unresolved)].map(field => '{{' + field + '}}').join(', ')
+    );
+  }
+  return prompt;
+}
+
 function fixedWorkerInstructions(change: string, mode: WorkerBatchMode) {
   const batchInstruction = mode === 'repair'
     ? 'Repair only the independently confirmed review findings within this Phase; do not add requirements or expand the scope.'
@@ -20,6 +45,7 @@ function fixedWorkerInstructions(change: string, mode: WorkerBatchMode) {
 export type WorkerBatchMode = 'implementation' | 'repair';
 
 export function buildOrdinaryWorkerPrompt(runKey: string, taskBatch: string, prompt: string) {
+  validateWorkerPrompt(prompt);
   return [
     'Ordinary OpenCode run: ' + runKey,
     'Task batch: ' + taskBatch,

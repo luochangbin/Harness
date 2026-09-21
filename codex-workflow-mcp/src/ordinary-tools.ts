@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { BrokerError, errorResult } from './errors.js';
 import { redactSecrets } from './schemas.js';
+import { validateWorkerPrompt } from './worker-prompt.js';
 
 const rootInput = { root: z.string().min(1) };
 const runKey = z.string().regex(/^ordinary:[A-Za-z0-9_.-]{1,256}$/);
@@ -29,6 +30,7 @@ export function registerOrdinaryTools(server: any, deps: any) {
       title: z.string().optional()
     }
   }, async ({ root, runKey, taskBatch, prompt, agent, access, expectedRevision, codespecSnapshotPath, workspaceSnapshotPath, title }: any) => safeCall(async () => {
+    validateWorkerPrompt(prompt);
     const runtime = await startProject(root);
     return await projectFileLock.withLock(root, async () => {
       await synchronizeWriter(runtime);

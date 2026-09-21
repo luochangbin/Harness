@@ -31,6 +31,22 @@ python <skill 基目录>/scripts/executor_support.py ensure-git --root <仓库�
 - 配置可以继续使用项目 Executor 配置，但不得因此创建 `SPEC.md`、`DESIGN.md`、AR change 或归档状态。
 - 状态损坏、namespace 不符或 binding 不完整时 fail-closed。
 
+### 2.1 派发前交接预检
+
+控制 Agent 仅在以下语义预检全部通过后派发 Worker；这些检视核销和跨层判断由控制 Agent 完成，不由脚本自动判断：
+
+1. 任务批次来源于检视意见时，在当前会话形成表 `finding_id | disposition(implemented/defect/product_pending) | evidence | task_id`。finding_id 必须稳定且唯一；只有 disposition=defect 才能绑定 task_id，product_pending 立即停止并等待用户。task batch 只能使用这些 task_id，rendered request 必须携带对应 finding_id 和 evidence；普通非检视任务不适用此表。
+2. 若任务跨越提示词、Agent、工具参数、HTTP、Connector 或查询实现，沿调用链跟读直接消费者直到最终实现，并记录参数来源、单位、时间锚点、边界和缺失值行为。无法由代码或现有契约证明的数值不得由工作流自行猜测；需要产品选择时停等用户。
+3. 将 Worker prompt 完整渲染后再检查项目根、需求、非目标、允许路径、验收、测试命令、实际 run key 和实际 task batch 均已存在，且不存在未解析占位符、CLI 半渲染字段或空的必填段。检查未通过时不得发送。
+
+预检是派发门禁，不是 Worker 完成后的补充说明。独立验收按 finding_id 对照原检视意见、核销表、实际 diff 和 tests；只有全部 defect 行完成并有对应证据时，才可接受本轮。脚本不自动判断 disposition、证据或产品语义，也不创建持久 manifest。
+
+### 测试产物责任
+
+Worker 运行测试时，工作流只能要求项目测试在支持时使用本轮独立临时位置，并记录实际生成路径、运行前基线和本轮归属。测试框架或项目自身优先负责自然清理；只有明确登记且由本轮创建的隔离临时目录才允许清理。工作流自有临时输出清理失败时必须发出 warning，并报告仍有效的路径；清理结果不构成代码验收通过或失败的替代。Controller 基于执行器报告、基线和实际 diff，显式区分代码/配置与运行数据/测试产物；分类不隐藏变化，不按名称删除，也不把 ignored/untracked 文件视为可批量删除对象。历史 eval-trace、knowledge.db 等预存数据默认保留。
+
+上述规则同样适用于 Controller 自身的独立复验：测试在支持时使用独立临时位置，记录基线和本轮归属；测试框架或项目自身优先自然清理，失败时保留证据并报告，不得污染或自动回滚预存数据。
+
 实际 Python CLI：
 
 ```text
@@ -51,6 +67,8 @@ python <skill 基目录>/scripts/executor_support.py adopt-ordinary-session --ro
 
 Session list 不返回 agent，因此 adoption binding 的 agent 留空。后续 `worker-run --action resume` 使用 binding 中的原 session ID，并省略 `--agent`，让 OpenCode 从 session 继承 agent。首次 create 的参数和约束不变。
 
+指定 session 的路径必须严格为 inspect、项目目录 session list、adopt、resume。确认用户给出的 session ID 后，禁止调用 Server probe/start、创建新 session、切换 transport 或改用最近会话；resume 始终沿用 adoption 得到的原 ID。
+
 ## 3. OpenCode CLI
 
 明确选择 `opencode` 且普通 session 的 transport 为 `cli` 时使用：
@@ -59,7 +77,7 @@ Session list 不返回 agent，因此 adoption binding 的 agent 留空。后续
 python <skill 基目录>/scripts/executor_support.py worker-run --executor opencode --action <create|resume> --root <仓库根> --run-key ordinary:<run-key> --prompt-file <运行时渲染后的临时prompt文件> --task-batch <all|任务ID逗号列表> --session-id <session-id> --worker-agent <agent> --controller-runtime <codex|claude|opencode> [--timeout-seconds <正整数>]
 ```
 
-控制 Agent 先把 `templates/ordinary-worker-prompt.txt` 渲染到本轮临时 UTF-8 文件，填入 `PROJECT_ROOT`、`REQUEST`、`NON_GOALS`、`ALLOWED_PATHS`、`ACCEPTANCE` 和 `TEST_COMMANDS`。CLI 的渲染结果可以只保留 `{{RUN_KEY}}` 和 `{{TASK_BATCH}}`，由 `worker-run` 替换；不得直接把模板源文件作为 `--prompt-file`。Server 不经过 `worker-run` 占位替换，必须由控制 Agent 连同实际 `RUN_KEY`、`TASK_BATCH` 一并替换后再派发，不能把 CLI 的半渲染正文传给 `opencode_run`。
+控制 Agent 先把 `templates/ordinary-worker-prompt.txt` 渲染到本轮临时 UTF-8 文件，填入 `PROJECT_ROOT`、`REQUEST`、`NON_GOALS`、`ALLOWED_PATHS`、`ACCEPTANCE` 和 `TEST_COMMANDS`。CLI `worker-run` 接收这份已渲染模板，允许且要求仅保留 `{{RUN_KEY}}` 和 `{{TASK_BATCH}}` 供发送前替换；不得直接把源模板作为 `--prompt-file`。Server 不经过 `worker-run` 占位替换，必须在发送前将所有已知工作流字段替换并通过无未解析字段门禁，不能传入 CLI 半渲染正文。
 
 首次 `create` 不传 `--session-id`；`resume` 必须校验同一 session ID、agent 和 `transport: cli`。Worker 不读取 AR 文件。完成 JSON 的 `codespec_check`、`workspace_check`、exit code、session ID 和 usage 只是实现证据，控制 Agent 仍独立检查 diff 和测试。
 

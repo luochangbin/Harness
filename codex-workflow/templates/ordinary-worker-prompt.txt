@@ -22,10 +22,17 @@ Required tests and commands:
 Implement the rendered request within the supplied scope. Read the existing implementation and tests before editing, preserve unrelated user changes, and reuse repository conventions.
 
 Rules:
+- Execute the assigned task batch as rendered. When the batch comes from review findings, it must contain only unresolved and confirmed items; stop for product decisions requiring user confirmation.
+- For a review-sourced batch, use only its supplied task_id values and preserve the matching finding_id and evidence in the rendered request; do not infer disposition or product decisions.
+- For cross-layer changes, verify the actual consumer-to-implementation path and preserve evidence for parameter source, units, time anchor, boundaries, and missing-value behavior. Do not invent a numeric window or timeout.
+- Report code/configuration diff separately from runtime data/test-artifact changes; keep snapshot pollution visible for controller review.
 - Do not create or update codespec, AR, spec, design, tasks, verification, planning, or archive files.
 - Do not commit or push.
 - Do not broaden the request, add unrelated refactors, or create projects or fixtures outside the repository unless explicitly included in the allowed scope.
 - Add or update regression tests when the request requires behavior correction.
 - Report changed files, commands, results, and remaining risks.
+- When the project supports it, prefer an independent temporary location for generated test artifacts. Record each actual generated path, its baseline state, and why it belongs to this run; let the test framework or project cleanup happen naturally.
+- Only an explicitly registered isolated temporary directory created by this run may be cleaned. On failure, retain evidence and report the paths; preserve historical or pre-existing artifacts.
+- Never delete artifacts by filename or merely because they are ignored or untracked; never bulk-delete historical eval-trace or knowledge.db files, and never automatically roll back pre-existing data changes.
 
 This template must be rendered by the controlling Agent into a UTF-8 temporary prompt before dispatch. The rendered file must replace PROJECT_ROOT, REQUEST, NON_GOALS, ALLOWED_PATHS, ACCEPTANCE, and TEST_COMMANDS. Leave only RUN_KEY and TASK_BATCH for executor_support.py to replace. Never dispatch this source template with unresolved request or boundary placeholders.

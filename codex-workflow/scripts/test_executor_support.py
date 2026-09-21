@@ -1592,7 +1592,6 @@ class ResolveWithSessionTest(unittest.TestCase):
         self.assertEqual(d["selected"], "current")
         self.assertEqual(d["reason_code"], "SELF_RUNTIME_CURRENT")
 
-
 class InspectChangeRoutingTest(unittest.TestCase):
     """P1 修复：inspect --change 完整实现绑定优先路由。"""
 
@@ -1764,6 +1763,41 @@ class WorkerRunSupportTest(unittest.TestCase):
 
         self.assertEqual(prompt, "诊断 AR-001-test 批次 1.1,1.2")
 
+    def test_full_loader_preserves_business_mustache_field(self):
+        prompt_file = os.path.join(self.root, "prompt.txt")
+        _write(prompt_file, "诊断 {{AR_CHANGE}} 环境 {{ENV_VAR}} 批次 {{TASK_BATCH}}")
+
+        prompt = es.load_worker_prompt(prompt_file, "AR-001-test", "1.1,1.2")
+
+        self.assertEqual(prompt, "诊断 AR-001-test 环境 {{ENV_VAR}} 批次 1.1,1.2")
+
+    def test_unrendered_full_placeholder_fails_before_worker(self):
+        prompt_file = os.path.join(self.root, "prompt.txt")
+        _write(prompt_file, "requirement={{REQUEST}} AR={{AR_CHANGE}} batch={{TASK_BATCH}}")
+        with mock.patch("executor_support.run_worker_with_codespec_guard") as guard:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = es.main([
+                    "worker-run", "--executor", "opencode", "--action", "create",
+                    "--root", self.root, "--change", "AR-001-test",
+                    "--prompt-file", prompt_file, "--task-batch", "1,2",
+                    "--controller-runtime", "codex",
+                ])
+        self.assertEqual(code, 2)
+        guard.assert_not_called()
+
+    def test_worker_argv_rejects_partial_rendered_prompt(self):
+        with self.assertRaises(ValueError):
+            es.build_worker_argv(
+                "opencode", "create", "requirement={{REQUEST}}",
+                "C:/repo")
+
+    def test_worker_argv_preserves_business_mustache_field(self):
+        argv = es.build_worker_argv(
+            "opencode", "create", "environment={{ENV_VAR}}",
+            "C:/repo")
+        self.assertEqual(argv[-1], "environment={{ENV_VAR}}")
+
     def test_invalid_task_batch_is_rejected(self):
         prompt_file = os.path.join(self.root, "prompt.txt")
         _write(prompt_file, "处理 {{AR_CHANGE}} 的 {{TASK_BATCH}}")
@@ -1810,6 +1844,10 @@ class WorkerRunSupportTest(unittest.TestCase):
 
         self.assertTrue(result["completed"])
         self.assertEqual(result["worker_exit_code"], 7)
+        self.assertIn(result["stdout_bytes"], (b"done\n", b"done\r\n"))
+        self.assertIn(result["stderr_bytes"], (b"failed\n", b"failed\r\n"))
+        self.assertTrue(os.path.exists(result["stdout_path"]))
+        self.assertTrue(os.path.exists(result["stderr_path"]))
         self.assertEqual(_read(result["stdout_path"]).strip(), "done")
         self.assertEqual(_read(result["stderr_path"]).strip(), "failed")
 
@@ -1826,6 +1864,25 @@ class WorkerRunSupportTest(unittest.TestCase):
         self.assertTrue(result["completed"])
         self.assertTrue(result["timed_out"])
         self.assertEqual(result["timeout_seconds"], 0.1)
+        self.assertTrue(os.path.exists(result["stdout_path"]))
+        self.assertTrue(os.path.exists(result["stderr_path"]))
+        self.assertIsInstance(_read(result["stdout_path"]), str)
+        self.assertIsInstance(_read(result["stderr_path"]), str)
+
+    def test_run_worker_success_cleans_output_after_reading_evidence(self):
+        code = "import sys; print('done'); print('failed', file=sys.stderr)"
+
+        result = es.run_worker_process(
+            [sys.executable, "-c", code], self.root,
+            which=lambda _: sys.executable, platform=os.name)
+
+        self.assertEqual(result["worker_exit_code"], 0)
+        self.assertFalse(result["timed_out"])
+        self.assertTrue(result["output_cleaned"])
+        self.assertFalse(os.path.exists(result["stdout_path"]))
+        self.assertFalse(os.path.exists(result["stderr_path"]))
+        self.assertIn(result["stdout_bytes"], (b"done\n", b"done\r\n"))
+        self.assertIn(result["stderr_bytes"], (b"failed\n", b"failed\r\n"))
 
 
 class WorkerRunCommandTest(unittest.TestCase):
@@ -1936,6 +1993,89 @@ class WorkerRunCommandTest(unittest.TestCase):
         self.assertFalse(out["ok"])
         self.assertEqual(out["error"], "Worker 修改了 codespec/")
 
+    def test_success_json_hides_cleaned_worker_output_paths(self):
+        code, out = self._run({
+            "completed": True,
+            "worker_exit_code": 0,
+            "output_cleaned": True,
+            "stdout_path": self.stdout_path,
+            "stderr_path": self.stderr_path,
+            "launch_argv": ["C:/tools/opencode.exe", "run"],
+            "codespec_check": {"ok": True, "changed": False,
+                               "changes": {"added": [], "removed": [],
+                                           "modified": []}},
+        })
+
+        self.assertEqual(code, 0)
+        self.assertTrue(out["output_cleaned"])
+        self.assertNotIn("stdout_path", out)
+        self.assertNotIn("stderr_path", out)
+
+    def test_cleanup_failure_json_keeps_output_paths_without_failing_worker(self):
+        code, out = self._run({
+            "completed": True,
+            "worker_exit_code": 0,
+            "output_cleaned": False,
+            "output_cleanup_error": "locked",
+            "stdout_path": self.stdout_path,
+            "stderr_path": self.stderr_path,
+            "launch_argv": ["C:/tools/opencode.exe", "run"],
+            "codespec_check": {"ok": True, "changed": False,
+                               "changes": {"added": [], "removed": [],
+                                           "modified": []}},
+        })
+
+        self.assertEqual(code, 0)
+        self.assertFalse(out["output_cleaned"])
+        self.assertEqual(out["output_cleanup_error"], "locked")
+        self.assertEqual(out["stdout_path"], self.stdout_path)
+        self.assertEqual(out["stderr_path"], self.stderr_path)
+
+    def test_worker_exception_json_keeps_snapshot_evidence(self):
+        prompt_file = os.path.join(self.root, "prompt.txt")
+        failure = OSError("Worker 运行失败；输出保留于 C:/worker-output")
+        failure.snapshot_checks = {
+            "codespec": {
+                "ok": False,
+                "error": "codespec snapshot 删除失败",
+                "snapshot_retained": True,
+                "snapshot_path": "C:/snapshots/codespec.json",
+            },
+            "workspace": {
+                "ok": False,
+                "error": "workspace snapshot 删除失败",
+                "snapshot_retained": True,
+                "snapshot_path": "C:/snapshots/workspace.json",
+            },
+        }
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), mock.patch(
+                "executor_support.run_worker_with_codespec_guard",
+                side_effect=failure):
+            code = es.main([
+                "worker-run", "--executor", "opencode", "--action", "create",
+                "--root", self.root, "--change", "AR-001-test",
+                "--prompt-file", prompt_file, "--task-batch", "1.1",
+                "--controller-runtime", "codex",
+            ])
+
+        output = json.loads(buf.getvalue())
+        self.assertEqual(code, 3)
+        self.assertFalse(output["ok"])
+        self.assertEqual(
+            output["error"],
+            "Worker 启动/运行异常：Worker 运行失败；输出保留于 C:/worker-output",
+        )
+        self.assertEqual(
+            output["snapshot_checks"]["codespec"]["snapshot_path"],
+            "C:/snapshots/codespec.json",
+        )
+        self.assertTrue(output["snapshot_checks"]["codespec"]["snapshot_retained"])
+        self.assertIn(
+            "workspace snapshot 删除失败",
+            output["snapshot_checks"]["workspace"]["error"],
+        )
+
     def test_help_is_success_not_parameter_failure(self):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -1985,7 +2125,7 @@ class WorkerRunCommandTest(unittest.TestCase):
     def test_unrendered_ordinary_placeholder_fails_before_worker(self):
         prompt_file = os.path.join(self.root, "ordinary-prompt.txt")
         _write(prompt_file,
-               "需求={{REQUIREMENT}} run={{RUN_KEY}} batch={{TASK_BATCH}}")
+               "需求={{REQUEST}} run={{RUN_KEY}} batch={{TASK_BATCH}}")
         with mock.patch("executor_support.run_worker_with_codespec_guard") as guard:
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
@@ -2173,6 +2313,10 @@ class GuardedWorkerRunTest(unittest.TestCase):
 
         self.assertTrue(result["codespec_check"]["ok"])
         self.assertFalse(result["codespec_check"]["changed"])
+        self.assertFalse(result["codespec_check"]["snapshot_retained"])
+        self.assertNotIn("snapshot_path", result["codespec_check"])
+        self.assertFalse(result["workspace_check"]["snapshot_retained"])
+        self.assertNotIn("snapshot_path", result["workspace_check"])
         self.assertNotIn("snapshot", result)
 
     def test_guard_reports_mutation_before_controller_can_advance(self):
@@ -2199,6 +2343,47 @@ class GuardedWorkerRunTest(unittest.TestCase):
         self.assertTrue(result["workspace_check"]["changed"])
         self.assertEqual(result["workspace_check"]["changes"]["modified"],
                          ["index.html"])
+
+    def test_guard_reports_both_snapshot_check_failures_and_retention(self):
+        with mock.patch(
+                "executor_support.compare_codespec_snapshot",
+                side_effect=ValueError("codespec compare failed")) as codespec_check, \
+                mock.patch(
+                    "executor_support.compare_workspace_snapshot",
+                    side_effect=ValueError("workspace compare failed")) as workspace_check:
+            result = es.run_worker_with_codespec_guard(
+                ["opencode"], self.root,
+                runner=lambda argv, root: self._result())
+
+        codespec_report = result["codespec_check"]
+        workspace_report = result["workspace_check"]
+        self.assertFalse(codespec_report["ok"])
+        self.assertFalse(workspace_report["ok"])
+        self.assertIn("codespec compare failed", codespec_report["error"])
+        self.assertIn("workspace compare failed", workspace_report["error"])
+        self.assertTrue(codespec_report["snapshot_retained"])
+        self.assertTrue(workspace_report["snapshot_retained"])
+        self.assertTrue(os.path.exists(codespec_check.call_args.args[1]))
+        self.assertTrue(os.path.exists(workspace_check.call_args.args[1]))
+
+    def test_worker_exception_carries_snapshot_check_failures_and_retention(self):
+        with mock.patch(
+                "executor_support.compare_codespec_snapshot",
+                side_effect=ValueError("codespec compare failed")), \
+                mock.patch(
+                    "executor_support.compare_workspace_snapshot",
+                    side_effect=ValueError("workspace compare failed")):
+            with self.assertRaises(RuntimeError) as raised:
+                es.run_worker_with_codespec_guard(
+                    ["opencode"], self.root,
+                    runner=lambda argv, root: (_ for _ in ()).throw(
+                        RuntimeError("worker failed")))
+
+        reports = getattr(raised.exception, "snapshot_checks")
+        self.assertTrue(reports["codespec"]["snapshot_retained"])
+        self.assertTrue(reports["workspace"]["snapshot_retained"])
+        self.assertIn("codespec compare failed", reports["codespec"]["error"])
+        self.assertIn("workspace compare failed", reports["workspace"]["error"])
 
 
 class ParseOpencodeSessionCommandTest(unittest.TestCase):

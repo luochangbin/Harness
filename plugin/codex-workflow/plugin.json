@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "codex-workflow",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "企业项目的轻量 Codex 规范工作流、可选审核-修复自动循环与 OpenCode Server 执行器",
   "author": {
     "name": "Harness"

@@ -369,6 +369,43 @@ test('a bound send resolves the AR session but still enforces the caller revisio
   assert.doesNotMatch(sentPrompt, /本次任务批次是：9\.9/);
 });
 
+test('a bound send rejects unresolved workflow placeholders before client send', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cw-reg-bound-prompt-reject-'));
+  const runtime = await runtimeFor(root);
+  const changeDir = path.join(root, 'codespec', 'changes', 'AR-001-bound-prompt-reject');
+  await fs.mkdir(changeDir, { recursive: true });
+  await fs.writeFile(path.join(changeDir, 'design.md'), '### Phase 1：实现\n', 'utf8');
+  await fs.writeFile(path.join(changeDir, 'tasks.md'), '## Phase 1：实现\n\n- [ ] 1.1 完成实现\n', 'utf8');
+  let sent = 0;
+  const client = fakeClient({ send: async () => { sent++; return { accepted: true }; } });
+  const manager = new SessionManager(client, new SessionStateStore(path.join(root, '.state')));
+  await manager.create(runtime, { change: 'AR-001-bound-prompt-reject', agent: 'ar-worker', access: 'workspace-write' });
+
+  await assert.rejects(
+    () => manager.sendBound(runtime, 'AR-001-bound-prompt-reject', '1', '{{REQUEST}}', 0, 'implementation', path.join(root, 'codespec-snapshot.json'), path.join(root, 'workspace-snapshot.json')),
+    { code: 'INVALID_PROMPT' }
+  );
+  assert.equal(sent, 0);
+});
+
+test('a bound send allows business mustache placeholders', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cw-reg-bound-prompt-business-'));
+  const runtime = await runtimeFor(root);
+  const changeDir = path.join(root, 'codespec', 'changes', 'AR-001-bound-prompt-business');
+  await fs.mkdir(changeDir, { recursive: true });
+  await fs.writeFile(path.join(changeDir, 'design.md'), '### Phase 1：实现\n', 'utf8');
+  await fs.writeFile(path.join(changeDir, 'tasks.md'), '## Phase 1：实现\n\n- [ ] 1.1 完成实现\n', 'utf8');
+  let sentPrompt = '';
+  const client = fakeClient({ send: async (_runtime, _sessionId, prompt) => { sentPrompt = prompt; return { accepted: true }; } });
+  const manager = new SessionManager(client, new SessionStateStore(path.join(root, '.state')));
+  await manager.create(runtime, { change: 'AR-001-bound-prompt-business', agent: 'ar-worker', access: 'workspace-write' });
+
+  const result = await manager.sendBound(runtime, 'AR-001-bound-prompt-business', '1', '{{ENV_VAR}}', 0, 'implementation', path.join(root, 'codespec-snapshot.json'), path.join(root, 'workspace-snapshot.json'));
+
+  assert.equal(result.accepted, true);
+  assert.match(sentPrompt, /\{\{ENV_VAR\}\}/);
+});
+
 test('a bound send persists the workspace snapshot path for recovery', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cw-reg-bound-snapshot-'));
   const runtime = await runtimeFor(root);

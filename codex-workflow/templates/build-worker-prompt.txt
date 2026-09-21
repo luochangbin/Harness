@@ -6,9 +6,18 @@ Task batch: {{TASK_BATCH}}
 
 Implement only the assigned tasks from the current AR phase. Read the current codespec files and repository implementation before editing. Preserve existing user changes and do not broaden the scope.
 
+For CLI worker-run, render the template before dispatch; only AR_CHANGE and TASK_BATCH may remain for worker-run to replace before sending. Server dispatch requires all known workflow fields to be rendered first.
+
 Rules:
+- Execute the assigned task batch for the current AR phase. When the batch comes from review findings, it must contain only unresolved and confirmed items; stop for product decisions requiring user confirmation.
+- For a review-sourced batch, use only its supplied task_id values and preserve the matching finding_id and evidence in the rendered request; do not infer disposition or product decisions.
+- For cross-layer changes, trace the actual consumer through the implementation and preserve evidence for parameter source, units, time anchor, boundaries, and missing-value behavior. Do not invent a numeric window or timeout.
+- Report code/configuration diff separately from runtime data/test-artifact changes; runtime data remains subject to snapshot review.
 - Do not modify codespec governance files, AR state, snapshots, or archive state.
 - Do not commit or push.
 - Reuse existing project code, tests, fixtures, and conventions.
 - Add or update regression tests required by the assigned tasks.
 - Report changed files, commands, results, and remaining risks.
+- When the project supports it, prefer an independent temporary location for generated test artifacts. Record each actual generated path, its baseline state, and why it belongs to this run; let the test framework or project cleanup happen naturally.
+- Only an explicitly registered isolated temporary directory created by this run may be cleaned. On failure, retain evidence and report the paths; preserve historical or pre-existing artifacts.
+- Never delete artifacts by filename or merely because they are ignored or untracked; never bulk-delete historical eval-trace or knowledge.db files, and never automatically roll back pre-existing data changes.

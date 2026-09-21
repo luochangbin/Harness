@@ -99,8 +99,11 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertEqual(set(re.findall(r"\{\{([A-Z_]+)\}\}", prompt)),
                          {"PROJECT_ROOT", "RUN_KEY", "TASK_BATCH", "REQUEST",
                           "NON_GOALS", "ALLOWED_PATHS", "ACCEPTANCE", "TEST_COMMANDS"})
-        self.assert_policy(cli, "渲染", "UTF-8", "REQUEST", "ALLOWED_PATHS",
-                           "ACCEPTANCE", "TEST_COMMANDS", "不得直接.*模板源文件")
+        self.assert_policy(cli, "UTF-8", "REQUEST", "ALLOWED_PATHS",
+                           "ACCEPTANCE", "TEST_COMMANDS")
+        self.assert_policy(
+            prompt, r"(?i)rendered", r"(?i)UTF-8", "PROJECT_ROOT",
+            "REQUEST", r"(?i)source template")
         self.assert_policy(prompt, "Do not create or update", "AR", "verification", "archive")
         self.assertIn("adopt-ordinary-session", self.ordinary)
         self.assert_policy(self.ordinary, "session ID", "只能采用", "不可静默创建", "改走 Server")
@@ -205,6 +208,64 @@ class WorkflowContractTest(unittest.TestCase):
         self.assert_policy(prompt, "Do not modify", "governance", "AR state", "snapshots", "archive state")
         self.assert_policy(prompt, "Reuse", "code", "tests", "fixtures")
         self.assert_policy(profile, "unsupported", "不能记为 0", "worker-runs.jsonl")
+
+    def test_worker_artifact_lifecycle_is_isolated_and_provenance_bound(self):
+        ordinary_prompt = _read(os.path.join(TEMPLATES, "ordinary-worker-prompt.txt"))
+        build_prompt = _read(os.path.join(TEMPLATES, "build-worker-prompt.txt"))
+        for prompt in (ordinary_prompt, build_prompt):
+            self.assertRegex(
+                prompt,
+                r"(?i)(?:independent temporary location|isolated temporary directory)")
+            self.assert_policy(
+                prompt, r"(?i)actual generated path", r"(?i)baseline",
+                r"(?i)belongs to this run")
+            self.assert_policy(
+                prompt,
+                r"(?i)test framework or project cleanup happen naturally",
+                r"(?i)explicitly registered isolated temporary directory",
+                r"(?i)created by this run may be cleaned")
+            self.assert_policy(
+                prompt, r"(?i)On failure", r"(?i)retain evidence",
+                r"(?i)report the paths")
+            self.assert_policy(
+                prompt, r"(?i)Never delete artifacts by filename",
+                r"(?i)ignored or untracked",
+                r"(?i)bulk-delete historical", r"(?i)pre-existing data")
+
+    def test_controller_audits_artifacts_without_bulk_cleanup(self):
+        for document in (_reference("ordinary-executor.md"), _reference("full-workflow.md")):
+            paragraphs = re.split(r"\n\s*\n", document)
+            audit = next((paragraph for paragraph in paragraphs
+                          if "Controller" in paragraph
+                          and "实际生成路径" in paragraph
+                          and "分类不隐藏变化" in paragraph), None)
+            self.assertIsNotNone(audit)
+            self.assert_policy(
+                audit, "实际生成路径", "基线", "本轮归属",
+                "代码/配置", "运行数据/测试产物")
+            self.assert_policy(
+                audit, "分类不隐藏变化", "不按名称删除",
+                "ignored/untracked", "历史", "预存数据", "保留")
+
+    def test_controller_own_verification_uses_same_artifact_contract(self):
+        for document in (_reference("ordinary-executor.md"), _reference("full-workflow.md")):
+            paragraphs = re.split(r"\n\s*\n", document)
+            verification = next((paragraph for paragraph in paragraphs
+                                 if "Controller 自身" in paragraph
+                                 and "独立复验" in paragraph), None)
+            self.assertIsNotNone(verification)
+            self.assert_policy(
+                verification, "独立临时位置", "基线", "本轮归属",
+                "自然清理")
+            self.assert_policy(
+                verification, "失败", "保留证据", "报告",
+                "自动回滚", "预存数据")
+
+    def test_eval_runbook_owns_temporary_artifact_cleanup(self):
+        runbook = _read(os.path.join(SKILL_ROOT, "eval", "runbook.md"))
+        for token in ("评测控制器", "临时仓库", "测试产物", "本轮", "清理",
+                      "失败", "保留", "证据", "历史", "不得", "批量删除"):
+            self.assertIn(token, runbook)
 
 
 class ProposalRemovedContractTest(unittest.TestCase):

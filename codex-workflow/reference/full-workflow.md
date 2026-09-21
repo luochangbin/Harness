@@ -38,6 +38,14 @@ python <skill 基目录>/scripts/archive_change.py --root <仓库根> --change <
 
 ## 4. Executor inspect 与绑定
 
+### 4.1 派发前交接预检
+
+若本轮任务来源于检视意见，控制 Agent 在当前会话形成表 `finding_id | disposition(implemented/defect/product_pending) | evidence | task_id`。finding_id 必须稳定且唯一；只有 disposition=defect 才能绑定 task_id，product_pending 立即停止并等待用户。task batch 只能使用这些 task_id，rendered request 必须携带对应 finding_id 和 evidence；普通新功能或普通 bug 不适用此表。这些语义判断由控制 Agent 完成，不由脚本自动判断。
+
+跨层契约任务必须沿实际相关的消费者到实现层跟读调用链，核对参数来源、单位、时间锚点、窗口边界和缺失值行为。没有代码或用户决定支持的数值不得写入任务假设。
+
+真正发送前必须校验完整渲染的 Worker prompt：Server 发送前所有已知工作流字段均已替换，必要的设计/任务上下文可按当前 AR 访问，且不存在未解析模板字段或 CLI 半渲染字段。预检失败时不得调用 session send。CLI worker-run 则接收预渲染模板，允许且要求仅保留 AR_CHANGE 和 TASK_BATCH 供其发送前替换。独立验收按 finding_id 对照原检视意见、核销表、实际 diff 和 tests；只有全部 defect 行完成并有对应证据时，才可推进 Verify。脚本不自动判断 disposition、证据或产品语义，也不创建持久 manifest。
+
 每次进入 Build 都执行：
 
 ```text
@@ -80,7 +88,7 @@ Server 失败不得静默转 CLI。MCP 或 Server 重启后按项目根和固定
 只有项目明确配置 `opencode_transport: cli` 或用户本次明确选择 CLI transport 时，才走 OpenCode CLI worker。此路径使用：
 
 ```text
-python <skill 基目录>/scripts/executor_support.py worker-run --executor opencode --action <create|resume> --root <仓库根> --change <AR名> --task-batch <all|任务ID逗号列表> --session-id <session-id> --worker-agent <bound-agent> --controller-runtime <codex|claude|opencode> --prompt-file <skill 基目录>/templates/build-worker-prompt.txt
+python <skill 基目录>/scripts/executor_support.py worker-run --executor opencode --action <create|resume> --root <仓库根> --change <AR名> --task-batch <all|任务ID逗号列表> --session-id <session-id> --worker-agent <bound-agent> --controller-runtime <codex|claude|opencode> --prompt-file <运行时渲染的 Full prompt 文件>
 ```
 
 首次 create 省略 `--session-id`，从同一完成 JSON 读取 `sessionID`，再执行：
@@ -93,9 +101,13 @@ python <skill 基目录>/scripts/executor_support.py set-session --root <仓库�
 
 ## 8. Current Executor
 
+若用户明确给出 OpenCode CLI session ID，必须在项目目录执行 session list 并按精确 ID 和目录校验，随后执行 adopt、resume。该路径跳过 Server probe/start、session create 和 Server send，不得创建新 session、切换 transport 或更换 session ID。
+
 `current` 由控制 Agent 在当前会话完成同一 Phase，实现后仍执行独立 diff、测试和交付验证；不等待外部 Worker 状态。Full 的 Executor 切换只按上一节的用户授权和旧 session 终态规则执行；验证失败或自动修复不能触发切换。
 
 ## 9. Snapshot、权限与失败恢复
+
+验收报告必须把代码和配置差异与运行数据和测试产物差异分开列出；运行数据不因此从快照检测中排除，历史文件也不因此获得清理授权。
 
 固定控制面命令为：
 
@@ -106,7 +118,11 @@ python <skill 基目录>/scripts/executor_support.py workspace-snapshot --root <
 python <skill 基目录>/scripts/executor_support.py workspace-check --root <仓库根> --snapshot <快照绝对路径>
 ```
 
-codespec snapshot 排除 Git、依赖和缓存目录；workspace snapshot 只能发现基线变化，交付目录仍受监控。任一快照缺失、check 异常或治理文件变化都停止 Build，不自动恢复文件、不推进 phase、不勾选任务。
+snapshot/workspace-snapshot 在其监控范围内完整发现并报告变化，不按代码/配置或运行数据/测试产物分类过滤；任一快照缺失、check 异常或治理文件变化都停止 Build，不自动恢复文件、不推进 phase、不勾选任务。
+
+Worker 测试产物只能由工作流要求在项目支持时优先写入本轮独立临时位置，并记录实际生成路径、运行前基线和本轮归属。测试框架或项目自身优先负责自然清理；只有明确登记且由本轮创建的隔离临时目录才允许清理。工作流自有临时输出清理失败时必须发出 warning，并报告仍有效的路径；清理结果不构成代码验收通过或失败的替代。Controller 基于执行器报告、基线和实际 diff，显式区分代码/配置与运行数据/测试产物；分类不隐藏变化，绝不按名称删除，也不把 ignored/untracked 文件视为可批量删除对象。历史 eval-trace、knowledge.db 等预存数据默认保留。
+
+上述规则同样适用于 Controller 自身的独立复验：测试在支持时使用独立临时位置，记录基线和本轮归属；测试框架或项目自身优先自然清理，失败时保留证据并报告，不得污染或自动回滚预存数据。
 
 OpenCode Server 对项目外安全只读、项目级 npm/pnpm/yarn/bun 依赖安装和 HTTP(S) 下载各自动回复一次 `once`。高风险写入、未知范围、全局安装、复合 Shell 命令、其他网络权限、凭据和权限升级仍需显式 `opencode_permission_respond`。拒绝或不确定时停止，不换 Executor/transport。
 

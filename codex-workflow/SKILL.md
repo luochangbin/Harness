@@ -58,6 +58,7 @@ python <skill 基目录>/scripts/executor_support.py inspect --root <仓库根> 
 - 修复继续使用同一 executor、agent、session 和本轮任务边界；OpenCode session 无法恢复时停止并报告，禁止私自重建或换 session。
 
 普通 Worker prompt 使用 `templates/ordinary-worker-prompt.txt`。它只包含本轮需求、边界、验收、允许修改范围、测试和安全约束，不引用 AR、spec、design 或 tasks 文件，也不要求 Worker 推进治理状态。
+任务来源于检视意见时，控制 Agent 仅在当前会话形成核销表 `finding_id | disposition(implemented/defect/product_pending) | evidence | task_id`：finding_id 稳定且唯一，只有 defect 可绑定 task_id，product_pending 停止；task batch 使用这些 task_id，rendered request 携带对应 finding_id 和 evidence。普通新功能或普通 bug 不适用这套表。跨层契约由控制 Agent 跟读实际消费者到实现，完整渲染的 prompt 通过代码门禁后才发送。
 
 普通入口的机器状态和派发契约见 [reference/ordinary-executor.md](reference/ordinary-executor.md)；它不读取 AR 的 design/tasks，也不复用 full 的 phase-batch 解析。
 

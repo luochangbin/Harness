@@ -29,6 +29,7 @@
   `仓库状态` 构造真实文件（含 `codespec/`、`.ar.yaml`、archive_change.py 等）。
 - 临时仓库**不得**位于 `D:\AI\harness` 或 `codex-workflow/eval/` 下。
 - 记录初始状态摘要及全量文件 hash（作为隔离与可复现证据）。
+- 评测控制器负责临时仓库、测试产物和运行目录的生命周期：记录实际生成路径及运行前基线；成功后只清理能证明属于本轮的临时产物，失败时保留必要证据并报告路径。历史文件不得按名称或仅凭 ignored/untracked 状态批量删除。
 
 ### 3. baseline 运行（无 Skill）
 

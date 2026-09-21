@@ -164,6 +164,43 @@ test('ordinary public tools/call supports dot suffix first send and same-session
   await client.close();
 });
 
+test('ordinary tools/call rejects a workflow placeholder before project probing or send', async () => {
+  const root = 'C:\\repo';
+  const runtime = { projectKey: 'sha256:test', root };
+  const calls = { start: 0, create: 0, send: 0 };
+  const fakeManager = {
+    binding: async () => null,
+    create: async () => { calls.create++; return { sessionId: 'ordinary_session_1', status: 'ready' }; },
+    sendOrdinary: async () => { calls.send++; return { accepted: true }; }
+  };
+  const server = new McpServer({ name: 'test', version: '1' });
+  const locks = { owner: () => null, restore: () => {}, update: () => {} };
+  registerOrdinaryTools(server, {
+    startProject: async () => { calls.start++; return runtime; },
+    synchronizeWriter: async () => {},
+    projectFileLock: { withLock: async (_root, fn) => fn() },
+    sessionManager: fakeManager,
+    locks
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test-client', version: '1' }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  const response = await client.callTool({
+    name: 'opencode_run',
+    arguments: {
+      root, runKey: 'ordinary:placeholder', taskBatch: 'all',
+      prompt: '{{REQUEST}}', agent: 'ar-worker', access: 'workspace-write',
+      expectedRevision: 0, codespecSnapshotPath: 'C:\\snap',
+      workspaceSnapshotPath: 'C:\\workspace'
+    }
+  });
+  assert.equal(response.isError, true);
+  assert.equal(calls.start, 0);
+  assert.equal(calls.create, 0);
+  assert.equal(calls.send, 0);
+  await client.close();
+});
+
 test('ordinary runKey cannot bind to a same-suffix full AR Session', async () => {
   const { runtime, manager } = await managerFor();
   const ar = await manager.create(runtime, {

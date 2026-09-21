@@ -1,6 +1,6 @@
 {
   "name": "codex-workflow",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "企业项目的轻量 Codex 规范工作流与 OpenCode Server 执行器",
   "author": {
     "name": "Harness"
