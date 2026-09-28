@@ -25,9 +25,12 @@ config_file = "./agents/executor.toml"
 ```toml
 name = "executor"
 description = "负责所有具体执行工作，包括仓库探索、代码实现、脚本编写、Shell、测试、Git 操作、GitHub/Web 调研、文档查询和修复审查问题。"
+
 model = "gpt-6-luna"
 model_reasoning_effort = "medium"
+
 sandbox_mode = "workspace-write"
+
 developer_instructions = """
 你是执行子智能体。
 
@@ -68,25 +71,45 @@ Root 负责推理、设计、决策、审查和最终验收。
 
 ## 安全部署步骤
 
-1. 使用 PowerShell 7 完整读取将要修改的 `config.toml`、`CODEX_HOME` 环境变量和目标文件状态。路径按此优先级确定：若 `CODEX_HOME` 已设置，使用其值；否则使用当前用户目录下的 `.codex`。不要写死用户名。先确认解析出的配置文件与目标目录确实属于预期 Codex 配置位置；发现多个可能配置或路径不明确时停止并报告。
-2. 查看完整现有配置及两个 agents 表。保留全部无关设置、注释、格式、MCP 配置与现有 agent。确认待加字段无冲突；遇到不能安全合并的冲突、无效 TOML 或不确定的配置布局时先停止并报告，不要做整文件替换。
+1. 先识别操作系统、当前可用的 Shell 以及 `CODEX_HOME`。使用该平台现有的安全工具，不要求安装或切换到特定 Shell。配置路径优先使用已设置的 `CODEX_HOME`；否则使用当前用户目录下的 `.codex`。不得写死用户名。先确认解析出的配置文件与目标目录确实属于预期 Codex 配置位置；发现多个可能配置或路径不明确时停止并报告。
+2. 使用当前 Shell 完整读取 `config.toml`、目标文件状态和两个 agents 表。保留全部无关设置、注释、格式、MCP 配置与现有 agent。确认待加字段无冲突；遇到不能安全合并的冲突、无效 TOML 或不确定的配置布局时先停止并报告，不要做整文件替换。
 3. 修改前将现有 `config.toml` 复制为同目录、带时间戳的备份；若目标配置文件已存在，也先备份它。确保备份名不存在，避免覆盖先前备份。若原配置不存在，记录该事实，后续回滚时只移除本次新建的配置文件。
-4. 创建 `agents` 目录（若尚不存在），将上方完整 `executor.toml` 写为 UTF-8。以最小差异合并用户配置片段；不得把示例片段直接写成整个 `config.toml`。写入后重新读取文件并解析两份 TOML，核对字段、值和完整指令文本。
+4. 创建 `agents` 目录（若尚不存在），将上方完整 `executor.toml` 写为 UTF-8。Windows PowerShell 5.1 的文本命令默认编码行为不同于其他 Shell；不要依赖任何 Shell 的默认值，必须显式指定 UTF-8。以最小差异合并用户配置片段；不得把示例片段直接写成整个 `config.toml`。写入后重新读取文件并解析两份 TOML，核对字段、值和完整指令文本。
 5. 不复制、迁移、打印或更改 token、API key、登录认证、MCP secrets 或其他凭据。配置合并只处理本文件列出的 agents 字段。若需要排查认证，停止并让用户在 Codex 自己的凭据管理流程中处理。
 6. 检查当前 Codex 是否提供 `gpt-6-luna`。如果不可用，立即停止，不得选用近似模型、默认模型或其他 executor；报告检查结果并询问用户下一步。
 7. 完成修改后新建一个 Codex 任务验证；若当前 Codex 不重新读取配置，则先重启 Codex 再新建任务。按下节逐项检查。只有验证成功才报告部署完成。
 
-PowerShell 7 路径解析示例（仅用于确定位置，不会修改配置）：
+下面的路径解析示例仅用于确定位置，不会修改配置。选择当前平台对应示例即可，不要求安装特定 Shell。两种示例均优先使用 `CODEX_HOME`，未设置时回退到当前用户目录的 `.codex`：
 
 ```powershell
-$codexConfigRoot = if (-not [string]::IsNullOrWhiteSpace($env:CODEX_HOME)) {
-    [System.IO.Path]::GetFullPath($env:CODEX_HOME)
+# Read-only path resolution; compatible with Windows PowerShell 5.1 and PowerShell 7+.
+Write-Output "OS: $([Environment]::OSVersion.Platform)"
+Write-Output "PowerShell: $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))"
+if ([string]::IsNullOrWhiteSpace($env:CODEX_HOME)) {
+    $codexConfigRoot = Join-Path $HOME '.codex'
 } else {
-    Join-Path $HOME '.codex'
+    $codexConfigRoot = $env:CODEX_HOME
 }
 $configPath = Join-Path $codexConfigRoot 'config.toml'
-$executorPath = Join-Path $codexConfigRoot 'agents\executor.toml'
+$executorPath = Join-Path (Join-Path $codexConfigRoot 'agents') 'executor.toml'
+Get-Item -LiteralPath $configPath, $executorPath -ErrorAction SilentlyContinue
 ```
+
+```sh
+# Read-only path resolution for macOS/Linux POSIX shells; no files are changed.
+uname -s
+printf 'shell=%s\n' "${SHELL:-unknown}"
+if [ -n "${CODEX_HOME:-}" ]; then
+  codex_config_root=$CODEX_HOME
+else
+  codex_config_root=$HOME/.codex
+fi
+config_path=$codex_config_root/config.toml
+executor_path=$codex_config_root/agents/executor.toml
+printf '%s\n%s\n' "$config_path" "$executor_path"
+```
+
+TOML 中的 `config_file = "./agents/executor.toml"` 使用正斜杠，跨 Windows、macOS 和 Linux 保持原样；该路径相对于声明它的 `config.toml` 所在目录解析，不需要按操作系统改写。
 
 ## 项目规则与提示词边界
 
@@ -96,6 +119,7 @@ $executorPath = Join-Path $codexConfigRoot 'agents\executor.toml'
 
 - 用户 `config.toml` 保留所有原有无关配置，并含有所要求的四个 `[agents]` 字段及 `[agents.executor]` 的 `description`、`config_file`。
 - `agents/executor.toml` 可解析，名称为 `executor`，模型为 `gpt-6-luna`，推理强度为 `medium`，沙箱模式为 `workspace-write`，`developer_instructions` 与本文件完整文本一致。
+- Windows PowerShell 5.1+ 与 POSIX shell 路径解析示例均存在且只读；写入结果为 UTF-8，并已重新读取和解析验证。
 - Codex 能加载配置并创建 executor；新任务的 executor 采用 `gpt-6-luna`，且收到完整指令。仅在配置文件存在不算加载成功。
 - 本次部署未改变其他用户配置、项目文件、MCP 凭据或认证数据；备份可读且回滚路径明确。
 - 若配置加载或模型可用性不能在当前界面直接确认，应如实标记为未验证，不要声称通过。
